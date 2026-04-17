@@ -9,6 +9,30 @@ from models.patient import Patient
 router = APIRouter(prefix="/patients", tags=["patients"])
 
 
+@router.get("")
+async def list_patients(
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # RBAC 由 auth_service 擋住（需要 patient:manage）
+    stmt = select(Patient).order_by(Patient.id.desc()).limit(200)
+    result = await db.execute(stmt)
+    patients = result.scalars().all()
+    return {
+        "patients": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "sex": p.sex,
+                "birth_date": p.birth_date.isoformat() if p.birth_date else None,
+                "phone": p.phone,
+                "email": p.email,
+            }
+            for p in patients
+        ]
+    }
+
+
 @router.get("/{patient_id}")
 async def get_patient(
     patient_id: int,

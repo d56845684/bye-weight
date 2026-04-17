@@ -75,6 +75,31 @@ func (e *Engine) refreshLoop() {
 	}
 }
 
+// Invalidate 清除 Redis 快取並強制從 DB 重新載入
+// 任何修改 roles / permissions / role_permissions 的 handler 都應該呼叫
+func (e *Engine) Invalidate(ctx context.Context) error {
+	e.rdb.Del(ctx, cacheKey)
+	routes, err := e.loadPermissionRoutes(ctx)
+	if err != nil {
+		return err
+	}
+	rolePerms, err := e.loadRolePermissions(ctx)
+	if err != nil {
+		return err
+	}
+	permConds, err := e.loadPolicyConditions(ctx)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.permissionRoutes = routes
+	e.rolePerms = rolePerms
+	e.permConditions = permConds
+	e.mu.Unlock()
+	e.saveToCache(ctx)
+	return nil
+}
+
 func (e *Engine) loadFromDB(ctx context.Context) error {
 	// 嘗試從 Redis 快取讀取
 	cached, err := e.rdb.Get(ctx, cacheKey).Result()
@@ -220,13 +245,27 @@ func (e *Engine) loadPolicyConditions(ctx context.Context) (map[string][]conditi
 	return result, nil
 }
 
-// ResolvePermission 從 HTTP method + URI 查找對應的 permission
+// ResolvePermission 從 HTTP method + URI 查找對應的 permission。
+// 匹配策略：
+//  1. url_pattern 若以 /api、/auth、/admin 開頭，以完整路徑比對
+//  2. 否則（舊 seed 的裸路徑如 /inbody），預設 prepend /api 比對
 func (e *Engine) ResolvePermission(method, uri string) string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	for _, r := range e.permissionRoutes {
-		if r.HTTPMethod == method && strings.HasPrefix(uri, "/api"+r.URLPattern) {
+		if r.HTTPMethod != method {
+			continue
+		}
+		if strings.HasPrefix(r.URLPattern, "/api") ||
+			strings.HasPrefix(r.URLPattern, "/auth") ||
+			strings.HasPrefix(r.URLPattern, "/admin") {
+			if strings.HasPrefix(uri, r.URLPattern) {
+				return r.PermissionName
+			}
+			continue
+		}
+		if strings.HasPrefix(uri, "/api"+r.URLPattern) {
 			return r.PermissionName
 		}
 	}

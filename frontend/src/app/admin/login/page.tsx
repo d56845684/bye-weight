@@ -1,0 +1,88 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+
+export default function AdminLoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("admin@dev.local");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await fetch("/auth/password-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email, password }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.role !== "super_admin" && data.role !== "admin") {
+        throw new Error(`此帳號角色為 ${data.role}，無權登入後台`);
+      }
+      router.push("/admin/users");
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <form onSubmit={submit} className="bg-white rounded-lg shadow-md p-8 w-full max-w-md space-y-4">
+        <div className="text-center">
+          <h1 className="text-2xl font-bold text-red-700">金鑽減重 管理後台</h1>
+          <p className="text-sm text-gray-500 mt-1">限 super admin 登入</p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">Email</label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            autoComplete="username"
+            className="w-full border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-red-500"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1">密碼</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            autoComplete="current-password"
+            className="w-full border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-red-500"
+          />
+        </div>
+
+        {error && <div className="bg-red-50 text-red-700 text-sm p-3 rounded">{error}</div>}
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full bg-red-700 text-white py-2 rounded hover:bg-red-800 disabled:opacity-50"
+        >
+          {loading ? "登入中…" : "登入"}
+        </button>
+
+        <div className="text-xs text-gray-400 text-center pt-2 border-t">
+          預設測試帳號：admin@dev.local / admin123（僅開發環境）
+        </div>
+      </form>
+    </div>
+  );
+}

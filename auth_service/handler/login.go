@@ -33,10 +33,10 @@ func (h *Handler) LineLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 查詢 auth_db.users
+	// 查詢 auth_db.users（走「先建後綁」流程，找不到就回 401 引導至管理員要綁定連結）
 	user, err := h.findUserByLineUUID(r.Context(), profile.UserID)
 	if err != nil {
-		http.Error(w, "user not found", http.StatusUnauthorized)
+		http.Error(w, "not bound — contact admin for a binding link", http.StatusUnauthorized)
 		return
 	}
 
@@ -79,6 +79,7 @@ func (h *Handler) LineLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/auth/refresh",
 	})
 
+	_ = logLogin(r.Context(), h.engine.DB(), user.ID, r, "line")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"user_id": user.ID,

@@ -3,6 +3,9 @@ WORKDIR /app
 COPY package.json ./
 RUN corepack enable && pnpm install
 COPY . .
+# Next.js build 只讀 .env / .env.production；把專案慣例的 .env.docker 複製過去，
+# 讓 NEXT_PUBLIC_* 能在 build time inline 進 JS bundle
+RUN if [ -f .env.docker ]; then cp .env.docker .env.production; fi
 RUN pnpm build
 
 FROM node:20-alpine

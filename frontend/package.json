@@ -13,6 +13,7 @@
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "@line/liff": "2.24.0",
+    "qrcode.react": "3.2.0",
     "recharts": "2.12.7"
   },
   "devDependencies": {
