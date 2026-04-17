@@ -1,0 +1,30 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_IP }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /home/ubuntu/app
+            git pull origin main
+
+            # 依序重啟各服務（每次 ~5-10 秒 downtime）
+            docker compose build
+            docker compose up -d --no-deps --build auth_service
+            docker compose up -d --no-deps --build main_service
+            docker compose up -d --no-deps --build frontend
+            docker compose up -d nginx
+
+            docker image prune -f

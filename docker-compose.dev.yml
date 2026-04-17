@@ -1,0 +1,101 @@
+# ============================================================
+# 開發環境 — 兩種用法
+# ============================================================
+#
+# 用法 A：只起 DB（推薦，服務在本機跑，有 hot-reload）
+#   docker compose -f docker-compose.dev.yml up -d
+#   各服務讀自己的 .env（hostname=localhost），直接跑：
+#     cd auth_service && source .env && go run .
+#     cd main_service && source .env && uvicorn main:app --reload --port 8002
+#     cd frontend && pnpm dev -p 3001
+#
+# 用法 B：全部放 Docker（不想裝 Go/Python/Node）
+#   docker compose -f docker-compose.dev.yml --profile full up -d
+#   各服務讀 .env.docker（hostname=Docker service name）
+#
+# Port mapping（避免與 teaching-platform 衝突）：
+#   postgres  5433 → 5432
+#   redis     6380 → 6379
+#   nginx     8080 → 80
+#   auth      8003 → 8001
+#   main      8002 → 8000
+#   frontend  3001 → 3000
+# ============================================================
+
+services:
+
+  # ── 基礎設施（兩種用法都起）────────────────────
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_PASSWORD: dev
+    volumes:
+      - bw_pg_data:/var/lib/postgresql/data
+      - ./sql/init-dev.sql:/docker-entrypoint-initdb.d/init-dev.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+
+  # ── 應用服務（--profile full 才起）─────────────
+  auth_service:
+    build:
+      context: ./auth_service
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8001"
+    env_file: ./auth_service/.env.docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    profiles: ["full"]
+
+  main_service:
+    build:
+      context: ./main_service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"
+    env_file: ./main_service/.env.docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    profiles: ["full"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3000"
+    env_file: ./frontend/.env.docker
+    depends_on:
+      - main_service
+    profiles: ["full"]
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - auth_service
+      - main_service
+      - frontend
+    profiles: ["full"]
+
+volumes:
+  bw_pg_data:
