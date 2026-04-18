@@ -86,6 +86,19 @@ export default function TenantsPage() {
             重新整理
           </button>
           <button
+            onClick={async () => {
+              const res = await fetch("/auth/v1/admin/invalidate", {
+                method: "POST",
+                credentials: "include",
+              });
+              alert(res.ok ? "已刷新權限快取" : `失敗：${await res.text()}`);
+            }}
+            className="text-sm px-3 py-1 border rounded hover:bg-gray-100"
+            title="改完 policy / action_mapping / tenant_services 後按一下立即生效（否則最多等 5 分鐘）"
+          >
+            🔄 刷新權限快取
+          </button>
+          <button
             onClick={() => setShowCreate(true)}
             className="text-sm px-3 py-1 bg-red-700 text-white rounded hover:bg-red-800"
           >

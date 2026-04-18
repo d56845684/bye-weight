@@ -55,6 +55,7 @@ func main() {
 	r.Get("/auth/admin/policies", h.ListPolicies)
 
 	r.Get("/auth/admin/services", h.ListServices)
+	r.Post("/auth/admin/invalidate", h.InvalidateCache)
 
 	r.Get("/auth/admin/tenants", h.ListTenants)
 	r.Post("/auth/admin/tenants", h.CreateTenant)
