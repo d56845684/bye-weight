@@ -67,7 +67,7 @@ function LiffInner() {
           return;
         }
 
-        const endpoint = bindingToken ? "/auth/line-bind" : "/auth/line-token";
+        const endpoint = bindingToken ? "/auth/v1/line-bind" : "/auth/v1/line-token";
         const body = bindingToken
           ? { access_token: accessToken, binding_token: bindingToken }
           : { access_token: accessToken };

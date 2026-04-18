@@ -35,6 +35,18 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 停用的 user 不給換新 access token
+	var active bool
+	if err := h.engine.DB().QueryRow(r.Context(),
+		`SELECT active FROM users WHERE id = $1`, claims.UserID).Scan(&active); err != nil {
+		http.Error(w, "user not found", http.StatusUnauthorized)
+		return
+	}
+	if !active {
+		http.Error(w, "account disabled", http.StatusUnauthorized)
+		return
+	}
+
 	accessToken, err := token.Issue(
 		claims.UserID, claims.Role, claims.TenantID,
 		"access", h.cfg.AccessTokenExpire, h.cfg.JWTSecret,

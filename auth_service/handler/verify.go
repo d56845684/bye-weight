@@ -39,6 +39,19 @@ func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 確認使用者仍啟用（後台將 active=false 後應立即生效，不等 JWT 過期）
+	var active bool
+	err = h.engine.DB().QueryRow(r.Context(),
+		`SELECT active FROM users WHERE id = $1`, claims.UserID).Scan(&active)
+	if err != nil {
+		http.Error(w, "user not found", http.StatusUnauthorized)
+		return
+	}
+	if !active {
+		http.Error(w, "account disabled", http.StatusUnauthorized)
+		return
+	}
+
 	method := r.Header.Get("X-Original-Method")
 	uri := r.Header.Get("X-Original-URI")
 

@@ -94,26 +94,26 @@ export default function RolePoliciesPage() {
         </div>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-2">
         {policies.map((p) => (
-          <label
+          <div
             key={p.id}
-            className="bg-white rounded-lg shadow-sm p-4 flex items-start gap-3 cursor-pointer"
+            className="bg-white rounded-lg shadow-sm p-3 flex items-center gap-3"
           >
             <input
               type="checkbox"
               checked={selected.has(p.id)}
               onChange={() => toggle(p.id)}
               disabled={locked}
-              className="mt-1"
             />
-            <div className="flex-1">
-              <div className="font-semibold text-sm">{p.name}</div>
-              <pre className="mt-2 text-xs bg-gray-50 p-2 rounded font-mono overflow-x-auto">
-                {JSON.stringify(p.document, null, 2)}
-              </pre>
-            </div>
-          </label>
+            <span className="font-mono text-sm flex-1">{p.name}</span>
+            <a
+              href={`/admin/policies/${p.id}`}
+              className="text-xs text-red-700 hover:underline"
+            >
+              編輯 document →
+            </a>
+          </div>
         ))}
       </div>
 

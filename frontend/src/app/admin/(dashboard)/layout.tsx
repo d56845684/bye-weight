@@ -55,6 +55,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <Link href="/admin/tenants" className="hover:underline">租戶</Link>
             <Link href="/admin/users" className="hover:underline">使用者</Link>
             <Link href="/admin/roles" className="hover:underline">角色</Link>
+            <Link href="/admin/policies" className="hover:underline">Policy</Link>
           </div>
           <button onClick={logout} className="ml-auto text-xs px-3 py-1 border border-white/40 rounded hover:bg-red-800">
             登出

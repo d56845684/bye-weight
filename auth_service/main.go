@@ -53,6 +53,8 @@ func main() {
 	r.Put("/auth/admin/roles/{id}/policies", h.SetRolePolicies)
 
 	r.Get("/auth/admin/policies", h.ListPolicies)
+	r.Get("/auth/admin/policies/{id}", h.GetPolicy)
+	r.Patch("/auth/admin/policies/{id}", h.UpdatePolicy)
 
 	r.Get("/auth/admin/services", h.ListServices)
 	r.Post("/auth/admin/invalidate", h.InvalidateCache)
