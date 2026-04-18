@@ -45,6 +45,7 @@ func main() {
 	r.Post("/auth/admin/users", h.CreateUser)
 	r.Patch("/auth/admin/users/{id}", h.UpdateUser)
 	r.Post("/auth/admin/users/{id}/binding-token", h.RegenerateBindToken)
+	r.Post("/auth/admin/users/{id}/unbind", h.UnbindUser)
 
 	r.Get("/auth/admin/roles", h.ListRoles)
 	r.Post("/auth/admin/roles", h.CreateRole)

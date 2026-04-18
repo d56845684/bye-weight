@@ -106,13 +106,21 @@ func (h *Handler) UpdatePolicy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	res, err := h.engine.DB().Exec(r.Context(),
-		`UPDATE policies SET document = $1 WHERE id = $2`, string(req.Document), id)
+	var affected int64
+	err = withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		res, err := tx.Exec(r.Context(),
+			`UPDATE policies SET document = $1 WHERE id = $2`, string(req.Document), id)
+		if err != nil {
+			return err
+		}
+		affected = res.RowsAffected()
+		return nil
+	})
 	if err != nil {
 		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if res.RowsAffected() == 0 {
+	if affected == 0 {
 		http.Error(w, "policy not found", http.StatusNotFound)
 		return
 	}

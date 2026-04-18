@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -116,6 +117,10 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if err := applyAuditContext(r.Context(), tx, r); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	var id int
 	err = tx.QueryRow(r.Context(), `
@@ -177,25 +182,28 @@ func (h *Handler) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	db := h.engine.DB()
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if name == "" {
-			http.Error(w, "name cannot be empty", http.StatusBadRequest)
-			return
+	err = withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		if req.Name != nil {
+			name := strings.TrimSpace(*req.Name)
+			if name == "" {
+				return fmt.Errorf("name cannot be empty")
+			}
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE tenants SET name = $1 WHERE id = $2`, name, id); err != nil {
+				return err
+			}
 		}
-		if _, err := db.Exec(r.Context(),
-			`UPDATE tenants SET name = $1 WHERE id = $2`, name, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		if req.Active != nil {
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE tenants SET active = $1 WHERE id = $2`, *req.Active, id); err != nil {
+				return err
+			}
 		}
-	}
-	if req.Active != nil {
-		if _, err := db.Exec(r.Context(),
-			`UPDATE tenants SET active = $1 WHERE id = $2`, *req.Active, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		return nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "id": id})
 }
@@ -282,6 +290,10 @@ func (h *Handler) SetTenantServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if err := applyAuditContext(r.Context(), tx, r); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	if _, err := tx.Exec(r.Context(),
 		`DELETE FROM tenant_services WHERE tenant_id = $1`, id); err != nil {
@@ -354,6 +366,10 @@ func (h *Handler) SetTenantRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if err := applyAuditContext(r.Context(), tx, r); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	if _, err := tx.Exec(r.Context(),
 		`DELETE FROM tenant_roles WHERE tenant_id = $1`, id); err != nil {

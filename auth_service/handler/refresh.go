@@ -47,6 +47,17 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// user-level 吊銷檢查（行為同 verify.go）
+	if claims.IssuedAt != nil {
+		if userRevoked, err := token.IsUserRevoked(r.Context(), h.rdb, claims.UserID, claims.IssuedAt.Time); err != nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		} else if userRevoked {
+			http.Error(w, "session revoked by admin", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	accessToken, err := token.Issue(
 		claims.UserID, claims.Role, claims.TenantID,
 		"access", h.cfg.AccessTokenExpire, h.cfg.JWTSecret,

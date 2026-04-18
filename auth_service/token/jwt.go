@@ -3,6 +3,7 @@ package token
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -64,4 +65,32 @@ func Revoke(ctx context.Context, rdb *redis.Client, jti string, exp time.Time) e
 func IsRevoked(ctx context.Context, rdb *redis.Client, jti string) (bool, error) {
 	n, err := rdb.Exists(ctx, "auth:blacklist:"+jti).Result()
 	return n > 0, err
+}
+
+// RevokeUser 在 Redis 寫 auth:user_revoke:{user_id} = now_unix，使該 user
+// 目前所有簽發時間早於此的 JWT 全部失效。admin 拔 LINE 綁定、停用、改角色 /
+// 切換 tenant 時都應呼叫。TTL = refresh token 最長效期（之後新發的 JWT 以
+// iat 通過檢查，key 到期可清掉）。
+func RevokeUser(ctx context.Context, rdb *redis.Client, userID int, ttl time.Duration) error {
+	key := fmt.Sprintf("auth:user_revoke:%d", userID)
+	return rdb.SetEx(ctx, key, fmt.Sprint(time.Now().Unix()), ttl).Err()
+}
+
+// IsUserRevoked 檢查該 user 有沒有被 RevokeUser 吊銷過，且 JWT 的 iat 比
+// 吊銷時間早。沒紀錄 → false。
+func IsUserRevoked(ctx context.Context, rdb *redis.Client, userID int, iat time.Time) (bool, error) {
+	key := fmt.Sprintf("auth:user_revoke:%d", userID)
+	val, err := rdb.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	revokeTs, parseErr := strconv.ParseInt(val, 10, 64)
+	if parseErr != nil {
+		// 壞資料保守當「未吊銷」避免誤殺，但應該 log
+		return false, nil
+	}
+	return iat.Unix() < revokeTs, nil
 }

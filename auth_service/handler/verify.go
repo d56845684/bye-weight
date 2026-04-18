@@ -52,6 +52,18 @@ func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 使用者層級吊銷：admin 拔 LINE 綁定 / 改角色 / 切 tenant 時會寫 Redis。
+	// JWT 簽發時間早於吊銷時間就視為失效，不必等 JWT TTL 到期。
+	if claims.IssuedAt != nil {
+		if userRevoked, err := token.IsUserRevoked(r.Context(), h.rdb, claims.UserID, claims.IssuedAt.Time); err != nil {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		} else if userRevoked {
+			http.Error(w, "session revoked by admin", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	method := r.Header.Get("X-Original-Method")
 	uri := r.Header.Get("X-Original-URI")
 

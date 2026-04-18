@@ -140,6 +140,21 @@ export default function AdminUsersPage() {
     setBinding(await res.json());
   };
 
+  const unbind = async (u: User) => {
+    const label = u.display_name || `#${u.id}`;
+    if (!confirm(`解除 ${label} 的 LINE 綁定後，其手機上的 session 會立即失效且帳號被停用。\n要重新啟用需重發綁定連結。確定？`))
+      return;
+    const res = await fetch(`/auth/v1/admin/users/${u.id}/unbind`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      alert(`解除綁定失敗：${await res.text()}`);
+      return;
+    }
+    load();
+  };
+
   const absoluteURL = (u: string) =>
     u.startsWith("http") ? u : `${window.location.origin}${u}`;
 
@@ -268,6 +283,14 @@ export default function AdminUsersPage() {
                         className="text-xs text-red-700 hover:underline"
                       >
                         產生綁定連結
+                      </button>
+                    )}
+                    {u.binding_status === "bound" && (
+                      <button
+                        onClick={() => unbind(u)}
+                        className="text-xs text-red-700 hover:underline"
+                      >
+                        解除綁定
                       </button>
                     )}
                   </td>

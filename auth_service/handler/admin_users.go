@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+
+	"auth_service/token"
 )
 
 const bindTokenTTL = 7 * 24 * time.Hour
@@ -132,11 +135,13 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var userID int
-	err := h.engine.DB().QueryRow(r.Context(), `
-		INSERT INTO users (display_name, role_id, tenant_id, active)
-		VALUES ($1, (SELECT id FROM roles WHERE name = $2), $3, true)
-		RETURNING id`,
-		req.DisplayName, req.Role, req.TenantID).Scan(&userID)
+	err := withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), `
+			INSERT INTO users (display_name, role_id, tenant_id, active)
+			VALUES ($1, (SELECT id FROM roles WHERE name = $2), $3, true)
+			RETURNING id`,
+			req.DisplayName, req.Role, req.TenantID).Scan(&userID)
+	})
 	if err != nil {
 		http.Error(w, "create failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -219,15 +224,9 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	db := h.engine.DB()
-	if req.DisplayName != nil {
-		if _, err := db.Exec(r.Context(),
-			`UPDATE users SET display_name = $1 WHERE id = $2`, *req.DisplayName, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
+
+	// 驗證（讀取不需進 tx）
 	if req.Role != "" {
-		// 取該 user 現在的 tenant 驗 role 是否可用
 		var tenantID int
 		if err := db.QueryRow(r.Context(),
 			`SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&tenantID); err != nil {
@@ -251,12 +250,6 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if _, err := db.Exec(r.Context(), `
-			UPDATE users SET role_id = (SELECT id FROM roles WHERE name = $1)
-			WHERE id = $2`, req.Role, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 	}
 	if req.TenantID != nil {
 		var ok bool
@@ -266,20 +259,87 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "tenant not found or inactive", http.StatusBadRequest)
 			return
 		}
-		if _, err := db.Exec(r.Context(),
-			`UPDATE users SET tenant_id = $1 WHERE id = $2`, *req.TenantID, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 	}
-	if req.Active != nil {
-		if _, err := db.Exec(r.Context(),
-			`UPDATE users SET active = $1 WHERE id = $2`, *req.Active, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+
+	// 全部 UPDATE 在單一 audited tx 中執行
+	err = withAudit(r, db, func(tx pgx.Tx) error {
+		if req.DisplayName != nil {
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE users SET display_name = $1 WHERE id = $2`, *req.DisplayName, id); err != nil {
+				return err
+			}
 		}
+		if req.Role != "" {
+			if _, err := tx.Exec(r.Context(), `
+				UPDATE users SET role_id = (SELECT id FROM roles WHERE name = $1)
+				WHERE id = $2`, req.Role, id); err != nil {
+				return err
+			}
+		}
+		if req.TenantID != nil {
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE users SET tenant_id = $1 WHERE id = $2`, *req.TenantID, id); err != nil {
+				return err
+			}
+		}
+		if req.Active != nil {
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE users SET active = $1 WHERE id = $2`, *req.Active, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+
+	// 如果動到會讓 JWT 失真的欄位（role / tenant / active），立刻吊銷既有 session
+	if req.Role != "" || req.TenantID != nil || req.Active != nil {
+		_ = token.RevokeUser(r.Context(), h.rdb, id, h.cfg.RefreshTokenExpire)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "id": id})
+}
+
+// UnbindUser：POST /auth/admin/users/{id}/unbind
+// 同步清 line_uuid 並將 active 設為 false。手機上現有 JWT cookie 下一個 request
+// 會被 verify.go 的 active 檢查擋下；要再登入必須由 admin 重發 binding-token。
+func (h *Handler) UnbindUser(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	// 先確認 user 存在；不存在時直接回 404 比起跑完 tx 再看影響筆數乾淨
+	var exists bool
+	if err := h.engine.DB().QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`, id).Scan(&exists); err != nil {
+		http.Error(w, "lookup failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+
+	err = withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(r.Context(),
+			`UPDATE users SET line_uuid = NULL, active = false WHERE id = $1`, id)
+		return execErr
+	})
+	if err != nil {
+		http.Error(w, "unbind failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 立刻吊銷該 user 現有所有 session（含 access_token / refresh_token）
+	// 即便 active 檢查、line_uuid 被誰改動，existing JWT 下一個 request 就 401。
+	_ = token.RevokeUser(r.Context(), h.rdb, id, h.cfg.RefreshTokenExpire)
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "unbound", "id": id})
 }
 
 func generateBindToken() (string, error) {
