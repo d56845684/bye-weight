@@ -9,10 +9,17 @@ type User = {
   line_uuid: string | null;
   google_email: string | null;
   role: string;
-  clinic_id: string;
-  patient_id: number | null;
+  tenant_id: number;
+  tenant_slug: string;
   active: boolean;
   binding_status: "bound" | "pending" | "password_only";
+};
+
+type Tenant = {
+  id: number;
+  slug: string;
+  name: string;
+  active: boolean;
 };
 
 type BindingResult = {
@@ -22,15 +29,19 @@ type BindingResult = {
   expires_at: string;
 };
 
+type RoleObj = { id: number; name: string };
+
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<User[]>([]);
-  const [roles, setRoles] = useState<string[]>([]);
+  const [roles, setRoles] = useState<RoleObj[]>([]);
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [tenantRoleIds, setTenantRoleIds] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   // 新增表單
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ display_name: "", role: "patient", clinic_id: "C001" });
+  const [form, setForm] = useState({ display_name: "", role: "patient", tenant_id: 1 });
   const [creating, setCreating] = useState(false);
 
   // 綁定連結 modal
@@ -39,13 +50,15 @@ export default function AdminUsersPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [usersRes, rolesRes] = await Promise.all([
-        fetch("/auth/admin/users", { credentials: "include" }),
-        fetch("/auth/admin/roles", { credentials: "include" }),
+      const [usersRes, rolesRes, tenantsRes] = await Promise.all([
+        fetch("/auth/v1/admin/users", { credentials: "include" }),
+        fetch("/auth/v1/admin/roles", { credentials: "include" }),
+        fetch("/auth/v1/admin/tenants", { credentials: "include" }),
       ]);
-      if (!usersRes.ok || !rolesRes.ok) throw new Error(`HTTP ${usersRes.status}`);
+      if (!usersRes.ok || !rolesRes.ok || !tenantsRes.ok) throw new Error(`HTTP ${usersRes.status}`);
       setUsers((await usersRes.json()).users ?? []);
-      setRoles(((await rolesRes.json()).roles ?? []).map((r: any) => r.name));
+      setRoles(((await rolesRes.json()).roles ?? []).map((r: any) => ({ id: r.id, name: r.name })));
+      setTenants((await tenantsRes.json()).tenants ?? []);
       setError(null);
     } catch (e: any) {
       setError(e.message);
@@ -58,8 +71,27 @@ export default function AdminUsersPage() {
     load();
   }, []);
 
+  // 當 form.tenant_id 改變時 fetch 該 tenant 訂閱的 role id 集合
+  useEffect(() => {
+    if (!showCreate || form.tenant_id === 0) {
+      setTenantRoleIds(new Set());
+      return;
+    }
+    (async () => {
+      try {
+        const res = await fetch(`/auth/v1/admin/tenants/${form.tenant_id}/roles`, {
+          credentials: "include",
+        });
+        if (!res.ok) return;
+        setTenantRoleIds(new Set((await res.json()).role_ids ?? []));
+      } catch {
+        setTenantRoleIds(new Set());
+      }
+    })();
+  }, [form.tenant_id, showCreate]);
+
   const updateUser = async (id: number, patch: Partial<User>) => {
-    const res = await fetch(`/auth/admin/users/${id}`, {
+    const res = await fetch(`/auth/v1/admin/users/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -77,7 +109,7 @@ export default function AdminUsersPage() {
     if (!form.display_name) return;
     setCreating(true);
     try {
-      const res = await fetch("/auth/admin/users", {
+      const res = await fetch("/auth/v1/admin/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -87,7 +119,7 @@ export default function AdminUsersPage() {
       const data: BindingResult = await res.json();
       setBinding(data);
       setShowCreate(false);
-      setForm({ display_name: "", role: "patient", clinic_id: "C001" });
+      setForm({ display_name: "", role: "patient", tenant_id: tenants[0]?.id ?? 1 });
       load();
     } catch (e: any) {
       alert(`建立失敗：${e.message}`);
@@ -97,7 +129,7 @@ export default function AdminUsersPage() {
   };
 
   const regenerate = async (id: number) => {
-    const res = await fetch(`/auth/admin/users/${id}/binding-token`, {
+    const res = await fetch(`/auth/v1/admin/users/${id}/binding-token`, {
       method: "POST",
       credentials: "include",
     });
@@ -110,6 +142,8 @@ export default function AdminUsersPage() {
 
   const absoluteURL = (u: string) =>
     u.startsWith("http") ? u : `${window.location.origin}${u}`;
+
+  const realTenants = tenants.filter((t) => t.id !== 0);
 
   return (
     <div>
@@ -140,7 +174,7 @@ export default function AdminUsersPage() {
                 <th className="p-3">名稱</th>
                 <th className="p-3">綁定</th>
                 <th className="p-3">角色</th>
-                <th className="p-3">診所</th>
+                <th className="p-3">Tenant</th>
                 <th className="p-3">狀態</th>
                 <th className="p-3">操作</th>
               </tr>
@@ -198,21 +232,24 @@ export default function AdminUsersPage() {
                       className="border rounded px-2 py-1 text-sm"
                     >
                       {roles.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
+                        <option key={r.id} value={r.name}>
+                          {r.name}
                         </option>
                       ))}
                     </select>
                   </td>
                   <td className="p-3">
-                    <input
-                      defaultValue={u.clinic_id}
-                      onBlur={(e) => {
-                        const v = e.target.value.trim();
-                        if (v !== u.clinic_id) updateUser(u.id, { clinic_id: v } as any);
-                      }}
-                      className="border rounded px-2 py-1 text-sm w-24"
-                    />
+                    <select
+                      value={u.tenant_id}
+                      onChange={(e) => updateUser(u.id, { tenant_id: Number(e.target.value) } as any)}
+                      className="border rounded px-2 py-1 text-sm"
+                    >
+                      {tenants.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.id === 0 ? "system" : t.slug}
+                        </option>
+                      ))}
+                    </select>
                   </td>
                   <td className="p-3">
                     <button
@@ -266,22 +303,44 @@ export default function AdminUsersPage() {
                 onChange={(e) => setForm({ ...form, role: e.target.value })}
                 className="w-full border rounded px-3 py-2 text-sm"
               >
-                {roles.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
+                {roles
+                  .filter((r) =>
+                    form.tenant_id === 0
+                      ? true  // system tenant 訂所有 role
+                      : tenantRoleIds.size === 0
+                        ? true  // 還沒 fetch 到，全顯示（避免空選單）
+                        : tenantRoleIds.has(r.id),
+                  )
+                  .map((r) => (
+                    <option key={r.id} value={r.name}>
+                      {r.name}
+                    </option>
+                  ))}
+              </select>
+              {form.tenant_id !== 0 && tenantRoleIds.size > 0 && (
+                <p className="text-xs text-gray-500 mt-1">
+                  僅顯示此 tenant 已訂閱的角色（共 {tenantRoleIds.size} 個）
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm mb-1">Tenant</label>
+              <select
+                value={form.tenant_id}
+                onChange={(e) => setForm({ ...form, tenant_id: Number(e.target.value) })}
+                className="w-full border rounded px-3 py-2 text-sm"
+                required
+              >
+                {form.role === "super_admin" && <option value={0}>system (0)</option>}
+                {realTenants.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.slug} · {t.name}
                   </option>
                 ))}
               </select>
-            </div>
-            <div>
-              <label className="block text-sm mb-1">診所代碼</label>
-              <input
-                value={form.clinic_id}
-                onChange={(e) => setForm({ ...form, clinic_id: e.target.value })}
-                pattern="^[A-Za-z0-9_-]{1,20}$"
-                required
-                className="w-full border rounded px-3 py-2 text-sm font-mono"
-              />
+              {realTenants.length === 0 && form.role !== "super_admin" && (
+                <p className="text-xs text-red-600 mt-1">尚無 tenant，請先到「租戶」建立。</p>
+              )}
             </div>
             <div className="flex gap-2 pt-2">
               <button

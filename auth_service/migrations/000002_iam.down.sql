@@ -1,0 +1,8 @@
+BEGIN;
+
+DROP TABLE IF EXISTS role_policies;
+DROP TABLE IF EXISTS policies;
+DROP TABLE IF EXISTS action_mappings;
+DROP TABLE IF EXISTS services;
+
+COMMIT;

@@ -5,8 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from deps import current_user
+from deps import current_user, current_patient
 from models.food_log import FoodLog
+from models.patient import Patient
 from utils.cache import invalidate
 
 router = APIRouter(prefix="/food-logs", tags=["food-logs"])
@@ -17,12 +18,15 @@ async def list_food_logs(
     date_from: str = Query(None),
     date_to: str = Query(None),
     user: dict = Depends(current_user),
+    patient: Patient = Depends(current_patient),
     db: AsyncSession = Depends(get_db),
 ):
-    patient_id = user["patient_id"]
     stmt = (
         select(FoodLog)
-        .where(FoodLog.patient_id == patient_id)
+        .where(
+            FoodLog.patient_id == patient.id,
+            FoodLog.tenant_id == user["tenant_id"],
+        )
         .order_by(FoodLog.logged_at.desc())
         .limit(100)
     )
@@ -61,10 +65,12 @@ async def create_food_log(
     total_fat: float | None = None,
     ai_suggestion: str | None = None,
     user: dict = Depends(current_user),
+    patient: Patient = Depends(current_patient),
     db: AsyncSession = Depends(get_db),
 ):
     log = FoodLog(
-        patient_id=user["patient_id"],
+        patient_id=patient.id,
+        tenant_id=user["tenant_id"],
         logged_at=datetime.now(),
         meal_type=meal_type,
         image_url=image_url,
@@ -78,5 +84,5 @@ async def create_food_log(
     db.add(log)
     await db.commit()
     today = datetime.now().strftime("%Y-%m-%d")
-    await invalidate(f"cache:food:{user['patient_id']}:{today}")
+    await invalidate(f"cache:food:{patient.id}:{today}")
     return {"id": log.id, "status": "created"}

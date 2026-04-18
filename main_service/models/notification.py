@@ -11,6 +11,7 @@ class NotificationRule(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     patient_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     type: Mapped[str] = mapped_column(String(20), nullable=False)
     days_before: Mapped[int | None] = mapped_column(Integer)
     interval_days: Mapped[int | None] = mapped_column(Integer)
@@ -24,6 +25,7 @@ class NotificationLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     patient_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     type: Mapped[str | None] = mapped_column(String(20))
     format: Mapped[str | None] = mapped_column(String(10))
     message_content: Mapped[str | None] = mapped_column(Text)

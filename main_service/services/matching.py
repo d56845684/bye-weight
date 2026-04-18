@@ -7,14 +7,19 @@ from models.patient import Patient
 
 
 async def match_patient(
-    db: AsyncSession, ocr_name: str, ocr_birth_date: date | None
+    db: AsyncSession,
+    ocr_name: str,
+    ocr_birth_date: date | None,
+    tenant_id: int,
 ) -> dict:
     """
-    比對 OCR 結果與病患資料。
+    比對 OCR 結果與病患資料（限同 tenant）。
     回傳: {"status": "matched"|"ambiguous"|"unmatched", "patient_id": int|None, "candidates": list}
     """
-    # 先用姓名比對
-    stmt = select(Patient).where(Patient.name == ocr_name)
+    stmt = select(Patient).where(
+        Patient.name == ocr_name,
+        Patient.tenant_id == tenant_id,
+    )
     result = await db.execute(stmt)
     candidates = result.scalars().all()
 

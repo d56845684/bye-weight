@@ -25,7 +25,6 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 檢查是否已被撤銷
 	revoked, err := token.IsRevoked(r.Context(), h.rdb, claims.ID)
 	if err != nil {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
@@ -36,9 +35,8 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 發行新的 access token
 	accessToken, err := token.Issue(
-		claims.UserID, claims.Role, claims.ClinicID, claims.PatientID,
+		claims.UserID, claims.Role, claims.TenantID,
 		"access", h.cfg.AccessTokenExpire, h.cfg.JWTSecret,
 	)
 	if err != nil {

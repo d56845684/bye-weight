@@ -3,28 +3,32 @@ package handler
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
 	"auth_service/engine"
 	"auth_service/token"
 )
 
+// Verify 對應 Nginx auth_request。流程：
+// 1. 解 access_token cookie
+// 2. 查 blacklist（fail-closed）
+// 3. 從 action_mappings 解析原始請求 → (action, resource template, path 變數)
+// 4. 展開 resource template 取得具體 ARN
+// 5. 依 subject.role 對應的 policies 做 IAM 評估
+// 6. 通過後注入 X-User-Id / X-User-Role / X-Tenant-Id header
 func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
-	// 1. 取 cookie
 	cookie, err := r.Cookie("access_token")
 	if err != nil {
 		http.Error(w, "no token", http.StatusUnauthorized)
 		return
 	}
 
-	// 2. 解析 JWT
 	claims, err := token.Parse(cookie.Value, h.cfg.JWTSecret)
 	if err != nil {
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
 
-	// 3. 查 blacklist（fix #5: fail-closed）
+	// fail-closed：Redis 故障時拒絕
 	revoked, err := token.IsRevoked(r.Context(), h.rdb, claims.ID)
 	if err != nil {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
@@ -35,46 +39,38 @@ func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. 解析原始請求的 method + URI（fix #2: X-Original-Method）
 	method := r.Header.Get("X-Original-Method")
 	uri := r.Header.Get("X-Original-URI")
-	perm := h.engine.ResolvePermission(method, uri)
 
-	// 5. RBAC + PBAC
-	if perm != "" {
-		sub := engine.Subject{
-			UserID:    claims.UserID,
-			Role:      claims.Role,
-			ClinicID:  claims.ClinicID,
-			PatientID: claims.PatientID,
-		}
-		res := resolveResource(uri, sub)
-
-		if !h.engine.Check(sub, perm, res) {
-			http.Error(w, "permission denied", http.StatusForbidden)
-			return
-		}
+	sub := engine.Subject{
+		UserID:   claims.UserID,
+		Role:     claims.Role,
+		TenantID: claims.TenantID,
 	}
 
-	// 6. 通過，注入 header
+	action, template, pathAttrs, serviceName, ok := h.engine.ResolveAction(method, uri)
+	if !ok {
+		// 沒有對應規則 → implicit deny
+		http.Error(w, "no action mapping for "+method+" "+uri, http.StatusForbidden)
+		return
+	}
+
+	// tenant 必須訂閱該 service（system tenant 永遠訂全部）
+	if !h.engine.IsServiceEnabled(sub.TenantID, serviceName) {
+		http.Error(w, "service '"+serviceName+"' not enabled for tenant", http.StatusForbidden)
+		return
+	}
+
+	resource := engine.SubstituteResource(template, sub, pathAttrs)
+
+	if !h.engine.Check(sub, action, resource) {
+		http.Error(w, "permission denied", http.StatusForbidden)
+		return
+	}
+
+	// 通過：注入上下文 header 給主服務
 	w.Header().Set("X-User-Id", strconv.Itoa(claims.UserID))
 	w.Header().Set("X-User-Role", claims.Role)
-	w.Header().Set("X-Clinic-Id", claims.ClinicID)
-	w.Header().Set("X-Patient-Id", strconv.Itoa(claims.PatientID))
+	w.Header().Set("X-Tenant-Id", strconv.Itoa(claims.TenantID))
 	w.WriteHeader(http.StatusOK)
-}
-
-func resolveResource(uri string, sub engine.Subject) engine.Resource {
-	res := engine.Resource{ClinicID: sub.ClinicID}
-	if strings.Contains(uri, "/patients/") {
-		parts := strings.Split(uri, "/")
-		for i, p := range parts {
-			if p == "patients" && i+1 < len(parts) {
-				res.PatientID, _ = strconv.Atoi(parts[i+1])
-			}
-		}
-	} else {
-		res.PatientID = sub.PatientID
-	}
-	return res
 }

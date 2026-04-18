@@ -13,6 +13,7 @@ class InbodyRecord(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     patient_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     uploaded_by: Mapped[int | None] = mapped_column(Integer)
     measured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     weight: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
@@ -31,6 +32,7 @@ class InbodyPending(Base):
     __tablename__ = "inbody_pending"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     uploaded_by: Mapped[int | None] = mapped_column(Integer)
     image_url: Mapped[str | None] = mapped_column(Text)
     ocr_name: Mapped[str | None] = mapped_column(String(20))

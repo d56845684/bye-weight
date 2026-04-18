@@ -13,6 +13,7 @@ class FoodLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     patient_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     logged_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     meal_type: Mapped[str | None] = mapped_column(String(10))
     image_url: Mapped[str | None] = mapped_column(Text)

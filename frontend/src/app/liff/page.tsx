@@ -43,7 +43,7 @@ function LiffInner() {
         // （綁定模式例外——binding 一定要走完整流程驗 LINE 身份）
         if (!bindingToken) {
           try {
-            const meRes = await fetch("/auth/me", { credentials: "include" });
+            const meRes = await fetch("/auth/v1/me", { credentials: "include" });
             if (meRes.ok) {
               const me = await meRes.json();
               const target = nextPath ?? ROLE_HOME[me.role] ?? "/patient/food-logs";

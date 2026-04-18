@@ -15,7 +15,7 @@ type devLoginRequest struct {
 
 // DevLogin：僅供非 production 環境測試使用。
 // 直接查 users 表發 JWT cookie，無需 LINE / Google OAuth。
-// 預設 line_uuid=dev-admin（由 000003 migration seed）。
+// 預設 line_uuid=dev-admin（由 000003 migration seed，tenant_id=0 system tenant）。
 func (h *Handler) DevLogin(w http.ResponseWriter, r *http.Request) {
 	if h.cfg.Env == "production" {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -32,7 +32,7 @@ func (h *Handler) DevLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accessToken, err := token.Issue(
-		user.ID, user.RoleName, user.ClinicID, user.PatientID,
+		user.ID, user.RoleName, user.TenantID,
 		"access", h.cfg.AccessTokenExpire, h.cfg.JWTSecret,
 	)
 	if err != nil {
@@ -41,7 +41,7 @@ func (h *Handler) DevLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	refreshToken, err := token.Issue(
-		user.ID, user.RoleName, user.ClinicID, user.PatientID,
+		user.ID, user.RoleName, user.TenantID,
 		"refresh", h.cfg.RefreshTokenExpire, h.cfg.JWTSecret,
 	)
 	if err != nil {
@@ -65,7 +65,7 @@ func (h *Handler) DevLogin(w http.ResponseWriter, r *http.Request) {
 		Secure:   false,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(h.cfg.RefreshTokenExpire.Seconds()),
-		Path:     "/auth/refresh",
+		Path:     "/auth/v1/refresh",
 	})
 
 	_ = logLogin(r.Context(), h.engine.DB(), user.ID, r, "dev")
@@ -73,8 +73,7 @@ func (h *Handler) DevLogin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"user_id":      user.ID,
 		"role":         user.RoleName,
-		"clinic_id":    user.ClinicID,
-		"patient_id":   user.PatientID,
+		"tenant_id":    user.TenantID,
 		"access_token": accessToken, // 方便 curl 測試直接帶 Cookie
 	})
 }
@@ -85,20 +84,20 @@ func (h *Handler) findUserForDevLogin(ctx context.Context, req devLoginRequest) 
 	switch {
 	case req.UserID > 0:
 		err = h.engine.DB().QueryRow(ctx, `
-			SELECT u.id, r.name, u.clinic_id, COALESCE(u.patient_id, 0)
+			SELECT u.id, r.name, u.tenant_id
 			FROM users u JOIN roles r ON u.role_id = r.id
 			WHERE u.id = $1 AND u.active = true
-		`, req.UserID).Scan(&u.ID, &u.RoleName, &u.ClinicID, &u.PatientID)
+		`, req.UserID).Scan(&u.ID, &u.RoleName, &u.TenantID)
 	default:
 		lineUUID := req.LineUUID
 		if lineUUID == "" {
 			lineUUID = "dev-admin"
 		}
 		err = h.engine.DB().QueryRow(ctx, `
-			SELECT u.id, r.name, u.clinic_id, COALESCE(u.patient_id, 0)
+			SELECT u.id, r.name, u.tenant_id
 			FROM users u JOIN roles r ON u.role_id = r.id
 			WHERE u.line_uuid = $1 AND u.active = true
-		`, lineUUID).Scan(&u.ID, &u.RoleName, &u.ClinicID, &u.PatientID)
+		`, lineUUID).Scan(&u.ID, &u.RoleName, &u.TenantID)
 	}
 	if err != nil {
 		return nil, err

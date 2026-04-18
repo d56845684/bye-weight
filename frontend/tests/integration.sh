@@ -38,9 +38,9 @@ VALUES ('test-patient', (SELECT id FROM roles WHERE name='patient'), 'C001', 1, 
 ON CONFLICT (line_uuid) DO UPDATE SET role_id = EXCLUDED.role_id;
 " >/dev/null
 
-curl -s -c "$SUPER_COOKIE"   -X POST "$BASE/auth/dev-login" -H "Content-Type: application/json" -d '{}' >/dev/null
-curl -s -c "$ADMIN_COOKIE"   -X POST "$BASE/auth/dev-login" -H "Content-Type: application/json" -d '{"line_uuid":"test-clinic-admin"}' >/dev/null
-curl -s -c "$PATIENT_COOKIE" -X POST "$BASE/auth/dev-login" -H "Content-Type: application/json" -d '{"line_uuid":"test-patient"}' >/dev/null
+curl -s -c "$SUPER_COOKIE"   -X POST "$BASE/auth/v1/dev-login" -H "Content-Type: application/json" -d '{}' >/dev/null
+curl -s -c "$ADMIN_COOKIE"   -X POST "$BASE/auth/v1/dev-login" -H "Content-Type: application/json" -d '{"line_uuid":"test-clinic-admin"}' >/dev/null
+curl -s -c "$PATIENT_COOKIE" -X POST "$BASE/auth/v1/dev-login" -H "Content-Type: application/json" -d '{"line_uuid":"test-patient"}' >/dev/null
 
 echo "── 後台 guard（/admin/*）──"
 code=$(status "$BASE/admin/users")

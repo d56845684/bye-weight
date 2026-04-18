@@ -7,7 +7,7 @@ type Role = {
   id: number;
   name: string;
   user_count: number;
-  permission_count: number;
+  policy_count: number;
   locked: boolean;
 };
 
@@ -20,7 +20,7 @@ export default function AdminRolesPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/auth/admin/roles", { credentials: "include" });
+      const res = await fetch("/auth/v1/admin/roles", { credentials: "include" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setRoles((await res.json()).roles ?? []);
       setError(null);
@@ -38,7 +38,7 @@ export default function AdminRolesPage() {
   const createRole = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName) return;
-    const res = await fetch("/auth/admin/roles", {
+    const res = await fetch("/auth/v1/admin/roles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -55,7 +55,7 @@ export default function AdminRolesPage() {
   const deleteRole = async (role: Role) => {
     if (role.locked) return;
     if (!confirm(`確定刪除角色「${role.name}」？`)) return;
-    const res = await fetch(`/auth/admin/roles/${role.id}`, {
+    const res = await fetch(`/auth/v1/admin/roles/${role.id}`, {
       method: "DELETE",
       credentials: "include",
     });
@@ -94,7 +94,7 @@ export default function AdminRolesPage() {
                 <th className="p-3">ID</th>
                 <th className="p-3">名稱</th>
                 <th className="p-3">使用者數</th>
-                <th className="p-3">權限數</th>
+                <th className="p-3">Policy 數</th>
                 <th className="p-3">操作</th>
               </tr>
             </thead>
@@ -107,10 +107,10 @@ export default function AdminRolesPage() {
                     {r.locked && <span className="ml-2 text-xs text-gray-500">🔒 系統角色</span>}
                   </td>
                   <td className="p-3">{r.user_count}</td>
-                  <td className="p-3">{r.permission_count}</td>
+                  <td className="p-3">{r.policy_count}</td>
                   <td className="p-3 space-x-2">
                     <Link href={`/admin/roles/${r.id}`} className="text-red-700 hover:underline text-xs">
-                      編輯權限
+                      編輯 Policy
                     </Link>
                     <button
                       disabled={r.locked || r.user_count > 0}

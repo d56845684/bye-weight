@@ -11,31 +11,31 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// 系統保護的角色：不可刪除；super_admin 還不可改權限
+// 系統保護的角色：不可刪除；super_admin 還不可改 policy 綁定
 var lockedFromDelete = map[string]bool{
 	"super_admin": true,
 	"patient":     true,
 }
-var lockedFromPermissionEdit = map[string]bool{
+var lockedFromPolicyEdit = map[string]bool{
 	"super_admin": true,
 }
 
 var roleNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,49}$`)
 
 type roleRow struct {
-	ID              int    `json:"id"`
-	Name            string `json:"name"`
-	UserCount       int    `json:"user_count"`
-	PermissionCount int    `json:"permission_count"`
-	Locked          bool   `json:"locked"` // 是否為系統角色（不可刪除）
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	UserCount   int    `json:"user_count"`
+	PolicyCount int    `json:"policy_count"`
+	Locked      bool   `json:"locked"`
 }
 
 // ListRoles：GET /auth/admin/roles
 func (h *Handler) ListRoles(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.engine.DB().Query(r.Context(), `
 		SELECT r.id, r.name,
-			COALESCE((SELECT COUNT(*) FROM users           WHERE role_id = r.id), 0),
-			COALESCE((SELECT COUNT(*) FROM role_permissions WHERE role_id = r.id), 0)
+			COALESCE((SELECT COUNT(*) FROM users         WHERE role_id = r.id), 0),
+			COALESCE((SELECT COUNT(*) FROM role_policies WHERE role_id = r.id), 0)
 		FROM roles r
 		ORDER BY r.id`)
 	if err != nil {
@@ -47,7 +47,7 @@ func (h *Handler) ListRoles(w http.ResponseWriter, r *http.Request) {
 	roles := []roleRow{}
 	for rows.Next() {
 		var rr roleRow
-		if err := rows.Scan(&rr.ID, &rr.Name, &rr.UserCount, &rr.PermissionCount); err != nil {
+		if err := rows.Scan(&rr.ID, &rr.Name, &rr.UserCount, &rr.PolicyCount); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -79,7 +79,6 @@ func (h *Handler) CreateRole(w http.ResponseWriter, r *http.Request) {
 	err := h.engine.DB().QueryRow(r.Context(),
 		`INSERT INTO roles (name) VALUES ($1) RETURNING id`, req.Name).Scan(&id)
 	if err != nil {
-		// 假定重複名稱
 		http.Error(w, "role name conflict: "+err.Error(), http.StatusConflict)
 		return
 	}
@@ -119,7 +118,7 @@ func (h *Handler) DeleteRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// role_permissions 透過 FK ON DELETE CASCADE 自動清除
+	// role_policies 透過 FK ON DELETE CASCADE 自動清除
 	if _, err := h.engine.DB().Exec(r.Context(), `DELETE FROM roles WHERE id = $1`, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -129,44 +128,45 @@ func (h *Handler) DeleteRole(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": id})
 }
 
-type permissionRow struct {
-	ID       int    `json:"id"`
-	Name     string `json:"name"`
-	Resource string `json:"resource"`
-	Action   string `json:"action"`
+type policyRow struct {
+	ID       int             `json:"id"`
+	Name     string          `json:"name"`
+	Document json.RawMessage `json:"document"`
 }
 
-// ListPermissions：GET /auth/admin/permissions
-func (h *Handler) ListPermissions(w http.ResponseWriter, r *http.Request) {
+// ListPolicies：GET /auth/admin/policies
+func (h *Handler) ListPolicies(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.engine.DB().Query(r.Context(),
-		`SELECT id, name, resource, action FROM permissions ORDER BY resource, action`)
+		`SELECT id, name, document FROM policies ORDER BY name`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	perms := []permissionRow{}
+	policies := []policyRow{}
 	for rows.Next() {
-		var p permissionRow
-		if err := rows.Scan(&p.ID, &p.Name, &p.Resource, &p.Action); err != nil {
+		var p policyRow
+		var docBytes []byte
+		if err := rows.Scan(&p.ID, &p.Name, &docBytes); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		perms = append(perms, p)
+		p.Document = json.RawMessage(docBytes)
+		policies = append(policies, p)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"permissions": perms})
+	writeJSON(w, http.StatusOK, map[string]any{"policies": policies})
 }
 
-// GetRolePermissions：GET /auth/admin/roles/{id}/permissions
-func (h *Handler) GetRolePermissions(w http.ResponseWriter, r *http.Request) {
+// GetRolePolicies：GET /auth/admin/roles/{id}/policies
+func (h *Handler) GetRolePolicies(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
 	rows, err := h.engine.DB().Query(r.Context(),
-		`SELECT permission_id FROM role_permissions WHERE role_id = $1`, id)
+		`SELECT policy_id FROM role_policies WHERE role_id = $1`, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -182,22 +182,22 @@ func (h *Handler) GetRolePermissions(w http.ResponseWriter, r *http.Request) {
 		}
 		ids = append(ids, pid)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"permission_ids": ids})
+	writeJSON(w, http.StatusOK, map[string]any{"policy_ids": ids})
 }
 
-type setRolePermissionsRequest struct {
-	PermissionIDs []int `json:"permission_ids"`
+type setRolePoliciesRequest struct {
+	PolicyIDs []int `json:"policy_ids"`
 }
 
-// SetRolePermissions：PUT /auth/admin/roles/{id}/permissions
-// 完整覆蓋寫入：清空既有 → 依 request 重建
-func (h *Handler) SetRolePermissions(w http.ResponseWriter, r *http.Request) {
+// SetRolePolicies：PUT /auth/admin/roles/{id}/policies
+// 完整覆蓋：清空既有 → 依 request 重建
+func (h *Handler) SetRolePolicies(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	var req setRolePermissionsRequest
+	var req setRolePoliciesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
@@ -214,8 +214,8 @@ func (h *Handler) SetRolePermissions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if lockedFromPermissionEdit[name] {
-		http.Error(w, "system role permissions are locked", http.StatusLocked)
+	if lockedFromPolicyEdit[name] {
+		http.Error(w, "system role policies are locked", http.StatusLocked)
 		return
 	}
 
@@ -227,13 +227,13 @@ func (h *Handler) SetRolePermissions(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 
 	if _, err := tx.Exec(r.Context(),
-		`DELETE FROM role_permissions WHERE role_id = $1`, id); err != nil {
+		`DELETE FROM role_policies WHERE role_id = $1`, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	for _, pid := range req.PermissionIDs {
+	for _, pid := range req.PolicyIDs {
 		if _, err := tx.Exec(r.Context(),
-			`INSERT INTO role_permissions (role_id, permission_id) VALUES ($1, $2)
+			`INSERT INTO role_policies (role_id, policy_id) VALUES ($1, $2)
 			 ON CONFLICT DO NOTHING`, id, pid); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -245,7 +245,7 @@ func (h *Handler) SetRolePermissions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = h.engine.Invalidate(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "count": len(req.PermissionIDs)})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "count": len(req.PolicyIDs)})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

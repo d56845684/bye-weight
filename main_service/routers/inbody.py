@@ -5,11 +5,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from deps import current_user
+from deps import current_user, current_patient
 from models.inbody import InbodyRecord, InbodyPending
+from models.patient import Patient
 from services.ocr import ocr_inbody
 from services.matching import match_patient
-from utils.cache import cache, invalidate
+from utils.cache import invalidate
 
 router = APIRouter(prefix="/inbody", tags=["inbody"])
 
@@ -17,12 +18,15 @@ router = APIRouter(prefix="/inbody", tags=["inbody"])
 @router.get("/history")
 async def inbody_history(
     user: dict = Depends(current_user),
+    patient: Patient = Depends(current_patient),
     db: AsyncSession = Depends(get_db),
 ):
-    patient_id = user["patient_id"]
     stmt = (
         select(InbodyRecord)
-        .where(InbodyRecord.patient_id == patient_id)
+        .where(
+            InbodyRecord.patient_id == patient.id,
+            InbodyRecord.tenant_id == user["tenant_id"],
+        )
         .order_by(InbodyRecord.measured_at.desc())
         .limit(50)
     )
@@ -50,15 +54,15 @@ async def upload_inbody(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """員工上傳 InBody 圖片，OCR 辨識後自動配對病患"""
+    """員工上傳 InBody 圖片，OCR 辨識後自動配對病患（限同 tenant）"""
     if user["role"] not in ("staff", "nutritionist", "admin"):
         raise HTTPException(403, "only staff can upload InBody records")
 
     try:
         ocr_result = await ocr_inbody(image_bytes)
     except Exception as e:
-        # OCR 失敗：存入 pending
         pending = InbodyPending(
+            tenant_id=user["tenant_id"],
             uploaded_by=user["user_id"],
             image_url=image_url,
             status="pending",
@@ -75,11 +79,12 @@ async def upload_inbody(
         except ValueError:
             pass
 
-    match = await match_patient(db, ocr_name, ocr_birth)
+    match = await match_patient(db, ocr_name, ocr_birth, tenant_id=user["tenant_id"])
 
     if match["status"] == "matched":
         record = InbodyRecord(
             patient_id=match["patient_id"],
+            tenant_id=user["tenant_id"],
             uploaded_by=user["user_id"],
             measured_at=datetime.now(),
             weight=ocr_result.get("weight"),
@@ -97,8 +102,8 @@ async def upload_inbody(
         await invalidate(f"cache:inbody:{match['patient_id']}")
         return {"status": "matched", "patient_id": match["patient_id"]}
 
-    # ambiguous 或 unmatched：存入 pending
     pending = InbodyPending(
+        tenant_id=user["tenant_id"],
         uploaded_by=user["user_id"],
         image_url=image_url,
         ocr_name=ocr_name,

@@ -39,7 +39,7 @@ func (h *Handler) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accessToken, err := token.Issue(
-		user.ID, user.RoleName, user.ClinicID, user.PatientID,
+		user.ID, user.RoleName, user.TenantID,
 		"access", h.cfg.AccessTokenExpire, h.cfg.JWTSecret,
 	)
 	if err != nil {
@@ -47,7 +47,7 @@ func (h *Handler) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refreshToken, err := token.Issue(
-		user.ID, user.RoleName, user.ClinicID, user.PatientID,
+		user.ID, user.RoleName, user.TenantID,
 		"refresh", h.cfg.RefreshTokenExpire, h.cfg.JWTSecret,
 	)
 	if err != nil {
@@ -68,7 +68,7 @@ func (h *Handler) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	})
 	http.SetCookie(w, &http.Cookie{
 		Name: "refresh_token", Value: refreshToken, HttpOnly: true,
-		Secure: secure, SameSite: sameSite, Path: "/auth/refresh",
+		Secure: secure, SameSite: sameSite, Path: "/auth/v1/refresh",
 		MaxAge: int(h.cfg.RefreshTokenExpire.Seconds()),
 	})
 
@@ -77,7 +77,7 @@ func (h *Handler) PasswordLogin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"user_id":   user.ID,
 		"role":      user.RoleName,
-		"clinic_id": user.ClinicID,
+		"tenant_id": user.TenantID,
 	})
 }
 
@@ -85,10 +85,10 @@ func (h *Handler) findUserWithPassword(ctx context.Context, email string) (*user
 	var u userRow
 	var hash string
 	err := h.engine.DB().QueryRow(ctx, `
-		SELECT u.id, r.name, u.clinic_id, COALESCE(u.patient_id, 0), u.password_hash
+		SELECT u.id, r.name, u.tenant_id, u.password_hash
 		FROM users u JOIN roles r ON u.role_id = r.id
 		WHERE u.google_email = $1 AND u.active = true AND u.password_hash IS NOT NULL
-	`, email).Scan(&u.ID, &u.RoleName, &u.ClinicID, &u.PatientID, &hash)
+	`, email).Scan(&u.ID, &u.RoleName, &u.TenantID, &hash)
 	if err != nil {
 		return nil, "", err
 	}

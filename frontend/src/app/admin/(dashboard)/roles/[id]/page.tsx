@@ -1,23 +1,22 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
-type Permission = {
+type Policy = {
   id: number;
   name: string;
-  resource: string;
-  action: string;
+  document: any;
 };
 
-export default function RolePermissionsPage() {
+export default function RolePoliciesPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const roleId = params.id;
 
   const [roleName, setRoleName] = useState<string>("");
   const [locked, setLocked] = useState(false);
-  const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [policies, setPolicies] = useState<Policy[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -26,19 +25,19 @@ export default function RolePermissionsPage() {
   useEffect(() => {
     (async () => {
       try {
-        const [permsRes, rolePermsRes, rolesRes] = await Promise.all([
-          fetch("/auth/admin/permissions", { credentials: "include" }),
-          fetch(`/auth/admin/roles/${roleId}/permissions`, { credentials: "include" }),
-          fetch("/auth/admin/roles", { credentials: "include" }),
+        const [policiesRes, rolePoliciesRes, rolesRes] = await Promise.all([
+          fetch("/auth/v1/admin/policies", { credentials: "include" }),
+          fetch(`/auth/v1/admin/roles/${roleId}/policies`, { credentials: "include" }),
+          fetch("/auth/v1/admin/roles", { credentials: "include" }),
         ]);
-        if (!permsRes.ok || !rolePermsRes.ok || !rolesRes.ok) {
+        if (!policiesRes.ok || !rolePoliciesRes.ok || !rolesRes.ok) {
           throw new Error("載入失敗");
         }
-        const perms = (await permsRes.json()).permissions as Permission[];
-        const ids = (await rolePermsRes.json()).permission_ids as number[];
+        const pols = (await policiesRes.json()).policies as Policy[];
+        const ids = (await rolePoliciesRes.json()).policy_ids as number[];
         const roles = (await rolesRes.json()).roles as { id: number; name: string; locked: boolean }[];
         const me = roles.find((r) => r.id === Number(roleId));
-        setPermissions(perms);
+        setPolicies(pols);
         setSelected(new Set(ids));
         setRoleName(me?.name ?? `#${roleId}`);
         setLocked(me?.name === "super_admin");
@@ -50,14 +49,6 @@ export default function RolePermissionsPage() {
     })();
   }, [roleId]);
 
-  const grouped = useMemo(() => {
-    const g: Record<string, Permission[]> = {};
-    for (const p of permissions) {
-      (g[p.resource] ||= []).push(p);
-    }
-    return g;
-  }, [permissions]);
-
   const toggle = (id: number) => {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
@@ -65,23 +56,14 @@ export default function RolePermissionsPage() {
     setSelected(next);
   };
 
-  const toggleResource = (resource: string, on: boolean) => {
-    const next = new Set(selected);
-    for (const p of grouped[resource]) {
-      if (on) next.add(p.id);
-      else next.delete(p.id);
-    }
-    setSelected(next);
-  };
-
   const save = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`/auth/admin/roles/${roleId}/permissions`, {
+      const res = await fetch(`/auth/v1/admin/roles/${roleId}/policies`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ permission_ids: Array.from(selected) }),
+        body: JSON.stringify({ policy_ids: Array.from(selected) }),
       });
       if (!res.ok) throw new Error(await res.text());
       router.push("/admin/roles");
@@ -103,56 +85,36 @@ export default function RolePermissionsPage() {
             <a href="/admin/roles" className="hover:underline">← 回到角色列表</a>
           </div>
           <h1 className="text-xl font-bold mt-1">
-            編輯權限：<span className="text-red-700">{roleName}</span>
+            編輯 Policy：<span className="text-red-700">{roleName}</span>
             {locked && <span className="ml-2 text-sm text-gray-500">🔒 系統角色（只讀）</span>}
           </h1>
         </div>
         <div className="ml-auto text-sm text-gray-500">
-          已選 {selected.size} / {permissions.length}
+          已選 {selected.size} / {policies.length}
         </div>
       </div>
 
-      <div className="space-y-4">
-        {Object.entries(grouped).map(([resource, perms]) => {
-          const all = perms.every((p) => selected.has(p.id));
-          const some = perms.some((p) => selected.has(p.id));
-          return (
-            <div key={resource} className="bg-white rounded-lg shadow-sm p-4">
-              <div className="flex items-center mb-2 pb-2 border-b">
-                <label className="font-semibold text-sm">
-                  <input
-                    type="checkbox"
-                    checked={all}
-                    ref={(el) => {
-                      if (el) el.indeterminate = some && !all;
-                    }}
-                    onChange={(e) => toggleResource(resource, e.target.checked)}
-                    disabled={locked}
-                    className="mr-2"
-                  />
-                  {resource}
-                </label>
-                <span className="ml-2 text-xs text-gray-400">
-                  ({perms.filter((p) => selected.has(p.id)).length} / {perms.length})
-                </span>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                {perms.map((p) => (
-                  <label key={p.id} className="flex items-center text-sm">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(p.id)}
-                      onChange={() => toggle(p.id)}
-                      disabled={locked}
-                      className="mr-2"
-                    />
-                    <span className="font-mono text-xs">{p.name}</span>
-                  </label>
-                ))}
-              </div>
+      <div className="space-y-3">
+        {policies.map((p) => (
+          <label
+            key={p.id}
+            className="bg-white rounded-lg shadow-sm p-4 flex items-start gap-3 cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              checked={selected.has(p.id)}
+              onChange={() => toggle(p.id)}
+              disabled={locked}
+              className="mt-1"
+            />
+            <div className="flex-1">
+              <div className="font-semibold text-sm">{p.name}</div>
+              <pre className="mt-2 text-xs bg-gray-50 p-2 rounded font-mono overflow-x-auto">
+                {JSON.stringify(p.document, null, 2)}
+              </pre>
             </div>
-          );
-        })}
+          </label>
+        ))}
       </div>
 
       <div className="mt-6 flex gap-2">

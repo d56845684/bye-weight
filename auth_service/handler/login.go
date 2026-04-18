@@ -26,23 +26,20 @@ func (h *Handler) LineLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 向 LINE 驗證 access token
 	profile, err := verifyLineToken(req.AccessToken)
 	if err != nil {
 		http.Error(w, "invalid LINE token", http.StatusUnauthorized)
 		return
 	}
 
-	// 查詢 auth_db.users（走「先建後綁」流程，找不到就回 401 引導至管理員要綁定連結）
 	user, err := h.findUserByLineUUID(r.Context(), profile.UserID)
 	if err != nil {
 		http.Error(w, "not bound — contact admin for a binding link", http.StatusUnauthorized)
 		return
 	}
 
-	// 發行 JWT
 	accessToken, err := token.Issue(
-		user.ID, user.RoleName, user.ClinicID, user.PatientID,
+		user.ID, user.RoleName, user.TenantID,
 		"access", h.cfg.AccessTokenExpire, h.cfg.JWTSecret,
 	)
 	if err != nil {
@@ -51,7 +48,7 @@ func (h *Handler) LineLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	refreshToken, err := token.Issue(
-		user.ID, user.RoleName, user.ClinicID, user.PatientID,
+		user.ID, user.RoleName, user.TenantID,
 		"refresh", h.cfg.RefreshTokenExpire, h.cfg.JWTSecret,
 	)
 	if err != nil {
@@ -59,7 +56,6 @@ func (h *Handler) LineLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set cookies
 	http.SetCookie(w, &http.Cookie{
 		Name:     "access_token",
 		Value:    accessToken,
@@ -76,14 +72,15 @@ func (h *Handler) LineLogin(w http.ResponseWriter, r *http.Request) {
 		Secure:   h.cfg.Env == "production",
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(h.cfg.RefreshTokenExpire.Seconds()),
-		Path:     "/auth/refresh",
+		Path:     "/auth/v1/refresh",
 	})
 
 	_ = logLogin(r.Context(), h.engine.DB(), user.ID, r, "line")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"user_id": user.ID,
-		"role":    user.RoleName,
+		"user_id":   user.ID,
+		"role":      user.RoleName,
+		"tenant_id": user.TenantID,
 	})
 }
 
@@ -114,22 +111,21 @@ func verifyLineToken(accessToken string) (*lineProfile, error) {
 	return &profile, nil
 }
 
+// userRow 是登入流程內部用的輕量投影：最少欄位即可發 JWT。
 type userRow struct {
-	ID        int
-	RoleName  string
-	ClinicID  string
-	PatientID int
+	ID       int
+	RoleName string
+	TenantID int
 }
 
 func (h *Handler) findUserByLineUUID(ctx context.Context, lineUUID string) (*userRow, error) {
-	// 使用 engine 的 DB pool
 	var u userRow
 	err := h.engine.DB().QueryRow(ctx, `
-		SELECT u.id, r.name, u.clinic_id, COALESCE(u.patient_id, 0)
+		SELECT u.id, r.name, u.tenant_id
 		FROM users u
 		JOIN roles r ON u.role_id = r.id
 		WHERE u.line_uuid = $1 AND u.active = true
-	`, lineUUID).Scan(&u.ID, &u.RoleName, &u.ClinicID, &u.PatientID)
+	`, lineUUID).Scan(&u.ID, &u.RoleName, &u.TenantID)
 	if err != nil {
 		return nil, err
 	}

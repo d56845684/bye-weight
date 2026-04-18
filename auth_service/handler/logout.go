@@ -39,7 +39,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 		Secure:   h.cfg.Env == "production",
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
-		Path:     "/auth/refresh",
+		Path:     "/auth/v1/refresh",
 	})
 
 	w.Header().Set("Content-Type", "application/json")

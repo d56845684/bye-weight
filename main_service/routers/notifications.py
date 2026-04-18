@@ -3,8 +3,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from deps import current_user
+from deps import current_user, current_patient
 from models.notification import NotificationRule
+from models.patient import Patient
 from services.notification import run_daily_notifications
 from utils.cache import invalidate
 
@@ -14,10 +15,13 @@ router = APIRouter(tags=["notifications"])
 @router.get("/notification-rules")
 async def list_rules(
     user: dict = Depends(current_user),
+    patient: Patient = Depends(current_patient),
     db: AsyncSession = Depends(get_db),
 ):
-    patient_id = user["patient_id"]
-    stmt = select(NotificationRule).where(NotificationRule.patient_id == patient_id)
+    stmt = select(NotificationRule).where(
+        NotificationRule.patient_id == patient.id,
+        NotificationRule.tenant_id == user["tenant_id"],
+    )
     result = await db.execute(stmt)
     rules = result.scalars().all()
     return [
@@ -39,17 +43,19 @@ async def create_rule(
     days_before: int | None = None,
     interval_days: int | None = None,
     user: dict = Depends(current_user),
+    patient: Patient = Depends(current_patient),
     db: AsyncSession = Depends(get_db),
 ):
     rule = NotificationRule(
-        patient_id=user["patient_id"],
+        patient_id=patient.id,
+        tenant_id=user["tenant_id"],
         type=type,
         days_before=days_before,
         interval_days=interval_days,
     )
     db.add(rule)
     await db.commit()
-    await invalidate(f"cache:notif_rules:{user['patient_id']}")
+    await invalidate(f"cache:notif_rules:{patient.id}")
     return {"id": rule.id, "status": "created"}
 
 
@@ -60,6 +66,7 @@ async def update_rule(
     days_before: int | None = None,
     interval_days: int | None = None,
     user: dict = Depends(current_user),
+    patient: Patient = Depends(current_patient),
     db: AsyncSession = Depends(get_db),
 ):
     values = {}
@@ -75,11 +82,15 @@ async def update_rule(
 
     await db.execute(
         update(NotificationRule)
-        .where(NotificationRule.id == rule_id)
+        .where(
+            NotificationRule.id == rule_id,
+            NotificationRule.tenant_id == user["tenant_id"],
+            NotificationRule.patient_id == patient.id,
+        )
         .values(**values)
     )
     await db.commit()
-    await invalidate(f"cache:notif_rules:{user['patient_id']}")
+    await invalidate(f"cache:notif_rules:{patient.id}")
     return {"status": "updated"}
 
 

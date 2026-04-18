@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1";
 
 export async function fetchAPI<T>(
   path: string,
@@ -12,7 +12,7 @@ export async function fetchAPI<T>(
 
   if (res.status === 401) {
     // 嘗試 refresh token
-    const refreshRes = await fetch("/auth/refresh", {
+    const refreshRes = await fetch("/auth/v1/refresh", {
       method: "POST",
       credentials: "include",
     });

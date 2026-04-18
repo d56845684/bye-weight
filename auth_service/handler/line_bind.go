@@ -78,11 +78,11 @@ func (h *Handler) LineBind(w http.ResponseWriter, r *http.Request) {
 	}
 
 	access, _ := token.Issue(
-		user.ID, user.RoleName, user.ClinicID, user.PatientID,
+		user.ID, user.RoleName, user.TenantID,
 		"access", h.cfg.AccessTokenExpire, h.cfg.JWTSecret,
 	)
 	refresh, _ := token.Issue(
-		user.ID, user.RoleName, user.ClinicID, user.PatientID,
+		user.ID, user.RoleName, user.TenantID,
 		"refresh", h.cfg.RefreshTokenExpire, h.cfg.JWTSecret,
 	)
 
@@ -97,7 +97,7 @@ func (h *Handler) LineBind(w http.ResponseWriter, r *http.Request) {
 	})
 	http.SetCookie(w, &http.Cookie{
 		Name: "refresh_token", Value: refresh, HttpOnly: true, Secure: secure,
-		SameSite: sameSite, Path: "/auth/refresh", MaxAge: int(h.cfg.RefreshTokenExpire.Seconds()),
+		SameSite: sameSite, Path: "/auth/v1/refresh", MaxAge: int(h.cfg.RefreshTokenExpire.Seconds()),
 	})
 	_ = logLogin(ctx, h.engine.DB(), user.ID, r, "line_bind")
 

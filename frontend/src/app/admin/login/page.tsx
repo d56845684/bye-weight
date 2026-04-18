@@ -15,7 +15,7 @@ export default function AdminLoginPage() {
     setError(null);
     setLoading(true);
     try {
-      const res = await fetch("/auth/password-login", {
+      const res = await fetch("/auth/v1/password-login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -29,7 +29,7 @@ export default function AdminLoginPage() {
       if (data.role !== "super_admin" && data.role !== "admin") {
         throw new Error(`此帳號角色為 ${data.role}，無權登入後台`);
       }
-      router.push("/admin/users");
+      router.push("/admin/tenants");
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -41,8 +41,8 @@ export default function AdminLoginPage() {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
       <form onSubmit={submit} className="bg-white rounded-lg shadow-md p-8 w-full max-w-md space-y-4">
         <div className="text-center">
-          <h1 className="text-2xl font-bold text-red-700">金鑽減重 管理後台</h1>
-          <p className="text-sm text-gray-500 mt-1">限 super admin 登入</p>
+          <h1 className="text-2xl font-bold text-red-700">管理後台</h1>
+          <p className="text-sm text-gray-500 mt-1">限 super_admin 登入</p>
         </div>
 
         <div>

@@ -11,6 +11,7 @@ class Visit(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     patient_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     visit_date: Mapped[date] = mapped_column(Date, nullable=False)
     doctor_id: Mapped[str | None] = mapped_column(String(20))
     notes: Mapped[str | None] = mapped_column(Text)
@@ -23,6 +24,7 @@ class Medication(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     visit_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     drug_name: Mapped[str | None] = mapped_column(String(100))
     frequency: Mapped[str | None] = mapped_column(String(20))
     days: Mapped[int | None] = mapped_column(Integer)

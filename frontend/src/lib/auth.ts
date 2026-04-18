@@ -14,7 +14,7 @@ export async function initLiff() {
   if (!accessToken) return null;
 
   // 用 LINE access token 換 JWT（存入 HttpOnly cookie）
-  const res = await fetch("/auth/line-token", {
+  const res = await fetch("/auth/v1/line-token", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",

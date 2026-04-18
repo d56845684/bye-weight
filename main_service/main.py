@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from routers import health, patients, inbody, food_logs, visits, notifications, line_webhook, upload
+import utils.tenant_guard  # noqa: F401  — 啟用 tenant filter event listener
 
 app = FastAPI(title="Bye-Weight API", version="1.0.0", docs_url="/docs")
 

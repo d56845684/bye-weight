@@ -27,24 +27,24 @@ status() {
 }
 
 # 以 super_admin 身份登入（有 patient:manage 權限）
-curl -s -c "$COOKIE" -X POST "$BASE/auth/dev-login" \
+curl -s -c "$COOKIE" -X POST "$BASE/auth/v1/dev-login" \
     -H "Content-Type: application/json" -d '{}' >/dev/null
 
 echo "── 1. /api/patients 無 cookie = 401 ──"
-code=$(status "$BASE/api/patients")
+code=$(status "$BASE/api/v1/patients")
 assert_eq "無 cookie 應 401" "401" "$code"
 
 echo "── 2. /api/patients 帶 cookie = 200 ──"
-code=$(status -b "$COOKIE" "$BASE/api/patients")
+code=$(status -b "$COOKIE" "$BASE/api/v1/patients")
 assert_eq "帶 cookie 應 200" "200" "$code"
 
 echo "── 3. /api/patients 回應為 JSON 且含 patients 欄位 ──"
-resp=$(curl -s -b "$COOKIE" "$BASE/api/patients")
+resp=$(curl -s -b "$COOKIE" "$BASE/api/v1/patients")
 has_key=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if 'patients' in d else 'no')")
 assert_eq "回應含 patients key" "yes" "$has_key"
 
 echo "── 4. /api/patients/999 不存在 = 404 ──"
-code=$(status -b "$COOKIE" "$BASE/api/patients/999")
+code=$(status -b "$COOKIE" "$BASE/api/v1/patients/999")
 assert_eq "不存在病患應 404" "404" "$code"
 
 echo

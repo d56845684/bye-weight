@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from utils.line import push_message
+from utils import tenant_guard
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,13 @@ RETRY_DELAYS = [30, 60, 120]
 async def run_daily_notifications(db: AsyncSession):
     """
     每日通知排程（fix #4: 冪等設計，可安全重複執行）
+    Cloud Scheduler 跨所有 tenant 掃排程，需 bypass RLS + tenant_guard。
     """
+    with tenant_guard.bypass():
+        await _run_daily_notifications_inner(db)
+
+
+async def _run_daily_notifications_inner(db: AsyncSession):
     today = date.today()
 
     # 1. 回診提醒

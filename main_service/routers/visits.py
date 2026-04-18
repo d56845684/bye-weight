@@ -3,7 +3,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from deps import current_user
+from deps import current_user, current_patient
+from models.patient import Patient
 from models.visit import Visit, Medication
 
 router = APIRouter(prefix="/visits", tags=["visits"])
@@ -12,12 +13,15 @@ router = APIRouter(prefix="/visits", tags=["visits"])
 @router.get("")
 async def list_visits(
     user: dict = Depends(current_user),
+    patient: Patient = Depends(current_patient),
     db: AsyncSession = Depends(get_db),
 ):
-    patient_id = user["patient_id"]
     stmt = (
         select(Visit)
-        .where(Visit.patient_id == patient_id)
+        .where(
+            Visit.patient_id == patient.id,
+            Visit.tenant_id == user["tenant_id"],
+        )
         .order_by(Visit.visit_date.desc())
         .limit(50)
     )
@@ -41,7 +45,11 @@ async def list_medications(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Medication).where(Medication.visit_id == visit_id)
+    # tenant 過濾：medications 透過 tenant_id 直接濾（auth layer 已保證 resource 歸屬）
+    stmt = select(Medication).where(
+        Medication.visit_id == visit_id,
+        Medication.tenant_id == user["tenant_id"],
+    )
     result = await db.execute(stmt)
     meds = result.scalars().all()
     return [
