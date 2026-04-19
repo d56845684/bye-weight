@@ -21,7 +21,9 @@ class PatientRegisterRequest(BaseModel):
 
 class PatientCreateRequest(BaseModel):
     """管理後台 admin/staff 建立病患用（尚未綁 LINE 時）。
-    跟 Register 相同欄位，但不接 auth_user_id —— 之後由 /patients/{id}/bind 綁。"""
+    可選 auth_user_id：若 clinic-admin 先呼叫 /auth/admin/users/invite 建好 auth
+    user 並拿到 id，這裡可以直接把 patient profile 綁上去，讓該 user 在 LIFF
+    首次登入時就是已登錄狀態，不用再跑 /patient/register。"""
     name: str = Field(min_length=1, max_length=20)
     national_id: str = Field(pattern=NATIONAL_ID_PATTERN, max_length=20)
     sex: Literal["M", "F", "O"]
@@ -29,6 +31,7 @@ class PatientCreateRequest(BaseModel):
     phone: str = Field(min_length=1, max_length=20)
     address: str = Field(min_length=1, max_length=200)
     email: str | None = Field(default=None, max_length=100)
+    auth_user_id: int | None = None
 
 
 class PatientUpdateRequest(BaseModel):

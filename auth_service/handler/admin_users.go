@@ -448,6 +448,71 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": id})
 }
 
+type invitePatientRequest struct {
+	DisplayName string `json:"display_name"`
+}
+
+// InvitePatient：POST /auth/admin/users/invite
+// 專門給「clinic-admin」或「特定 staff（被綁 patient-inviter policy 的）」用：
+// 在自己 tenant 建一個 role=patient 的 user 並產生 7 天 binding token。
+// 跟 CreateUser 的差異：強制 role=patient、強制 tenant=caller，action 是
+// admin:user:invite（不是 admin:user:write），方便超管把邀請病患的權力下放。
+func (h *Handler) InvitePatient(w http.ResponseWriter, r *http.Request) {
+	var req invitePatientRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	req.DisplayName = strings.TrimSpace(req.DisplayName)
+	if req.DisplayName == "" {
+		http.Error(w, "display_name required", http.StatusBadRequest)
+		return
+	}
+
+	tenantID := callerTenantID(r)
+	if tenantID == 0 {
+		http.Error(w, "invite requires a real tenant (system tenant cannot invite patients)", http.StatusBadRequest)
+		return
+	}
+
+	// 確認 tenant 活著
+	var tenantActive bool
+	if err := h.engine.DB().QueryRow(r.Context(),
+		`SELECT active FROM tenants WHERE id = $1`, tenantID).Scan(&tenantActive); err != nil || !tenantActive {
+		http.Error(w, "tenant not found or inactive", http.StatusBadRequest)
+		return
+	}
+
+	var userID int
+	err := withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), `
+			INSERT INTO users (display_name, role_id, tenant_id, active)
+			VALUES ($1, (SELECT id FROM roles WHERE name = 'patient'), $2, true)
+			RETURNING id`, req.DisplayName, tenantID).Scan(&userID)
+	})
+	if err != nil {
+		http.Error(w, "create failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	token, err := generateBindToken()
+	if err != nil {
+		http.Error(w, "token generation failed", http.StatusInternalServerError)
+		return
+	}
+	if err := h.rdb.Set(r.Context(), "bind:"+token, userID, bindTokenTTL).Err(); err != nil {
+		http.Error(w, "token store failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, createUserResponse{
+		UserID:     userID,
+		Token:      token,
+		BindingURL: buildBindingURL(r, token),
+		ExpiresAt:  time.Now().Add(bindTokenTTL),
+	})
+}
+
 type setPasswordRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`

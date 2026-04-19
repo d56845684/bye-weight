@@ -44,6 +44,7 @@ func main() {
 	// 管理後台 API（由 Nginx 先走 auth_request 擋掉非 super_admin）
 	r.Get("/auth/admin/users", h.ListUsers)
 	r.Post("/auth/admin/users", h.CreateUser)
+	r.Post("/auth/admin/users/invite", h.InvitePatient)
 	r.Patch("/auth/admin/users/{id}", h.UpdateUser)
 	r.Delete("/auth/admin/users/{id}", h.DeleteUser)
 	r.Post("/auth/admin/users/{id}/binding-token", h.RegenerateBindToken)
@@ -62,6 +63,11 @@ func main() {
 
 	r.Get("/auth/admin/services", h.ListServices)
 	r.Post("/auth/admin/invalidate", h.InvalidateCache)
+
+	r.Get("/auth/admin/action-mappings", h.ListActionMappings)
+	r.Post("/auth/admin/action-mappings", h.CreateActionMapping)
+	r.Patch("/auth/admin/action-mappings/{id}", h.UpdateActionMapping)
+	r.Delete("/auth/admin/action-mappings/{id}", h.DeleteActionMapping)
 
 	r.Get("/auth/admin/tenants", h.ListTenants)
 	r.Post("/auth/admin/tenants", h.CreateTenant)

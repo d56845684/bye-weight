@@ -69,6 +69,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             {canUsers && <Link href="/admin/users" className="hover:underline">使用者</Link>}
             {isSuper && <Link href="/admin/roles" className="hover:underline">角色</Link>}
             {isSuper && <Link href="/admin/policies" className="hover:underline">Policy</Link>}
+            {isSuper && <Link href="/admin/action-mappings" className="hover:underline">Action Mapping</Link>}
             {canPatients && <Link href="/admin/patients" className="hover:underline">病患</Link>}
           </div>
           {me && (

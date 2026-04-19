@@ -30,8 +30,10 @@ type BindingResult = {
 };
 
 type RoleObj = { id: number; name: string };
+type Me = { user_id: number; role: string; tenant_id: number };
 
 export default function AdminUsersPage() {
+  const [me, setMe] = useState<Me | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<RoleObj[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -50,15 +52,32 @@ export default function AdminUsersPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [usersRes, rolesRes, tenantsRes] = await Promise.all([
+      // 先拿 /me 決定要呼叫哪些 endpoint
+      const meRes = await fetch("/auth/v1/me", { credentials: "include" });
+      if (!meRes.ok) throw new Error("auth required");
+      const meData: Me = await meRes.json();
+      setMe(meData);
+      const isSuper = meData.role === "super_admin";
+
+      // super_admin 才能列所有 tenants；clinic-admin 只能操作自己 tenant
+      const reqs: Promise<Response>[] = [
         fetch("/auth/v1/admin/users", { credentials: "include" }),
         fetch("/auth/v1/admin/roles", { credentials: "include" }),
-        fetch("/auth/v1/admin/tenants", { credentials: "include" }),
-      ]);
-      if (!usersRes.ok || !rolesRes.ok || !tenantsRes.ok) throw new Error(`HTTP ${usersRes.status}`);
+      ];
+      if (isSuper) {
+        reqs.push(fetch("/auth/v1/admin/tenants", { credentials: "include" }));
+      }
+      const [usersRes, rolesRes, tenantsRes] = await Promise.all(reqs);
+      if (!usersRes.ok || !rolesRes.ok || (tenantsRes && !tenantsRes.ok)) {
+        throw new Error(`HTTP ${usersRes.status}`);
+      }
       setUsers((await usersRes.json()).users ?? []);
       setRoles(((await rolesRes.json()).roles ?? []).map((r: any) => ({ id: r.id, name: r.name })));
-      setTenants((await tenantsRes.json()).tenants ?? []);
+      setTenants(tenantsRes ? (await tenantsRes.json()).tenants ?? [] : []);
+      // clinic-admin：預設表單的 tenant_id 鎖在自己的 tenant
+      if (!isSuper) {
+        setForm((f) => ({ ...f, tenant_id: meData.tenant_id }));
+      }
       setError(null);
     } catch (e: any) {
       setError(e.message);
@@ -197,6 +216,7 @@ export default function AdminUsersPage() {
     u.startsWith("http") ? u : `${window.location.origin}${u}`;
 
   const realTenants = tenants.filter((t) => t.id !== 0);
+  const isSuper = me?.role === "super_admin";
 
   return (
     <div>
@@ -227,7 +247,7 @@ export default function AdminUsersPage() {
                 <th className="p-3">名稱</th>
                 <th className="p-3">綁定</th>
                 <th className="p-3">角色</th>
-                <th className="p-3">Tenant</th>
+                {isSuper && <th className="p-3">Tenant</th>}
                 <th className="p-3">狀態</th>
                 <th className="p-3">操作</th>
               </tr>
@@ -291,19 +311,21 @@ export default function AdminUsersPage() {
                       ))}
                     </select>
                   </td>
-                  <td className="p-3">
-                    <select
-                      value={u.tenant_id}
-                      onChange={(e) => updateUser(u.id, { tenant_id: Number(e.target.value) } as any)}
-                      className="border rounded px-2 py-1 text-sm"
-                    >
-                      {tenants.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.id === 0 ? "system" : t.slug}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
+                  {isSuper && (
+                    <td className="p-3">
+                      <select
+                        value={u.tenant_id}
+                        onChange={(e) => updateUser(u.id, { tenant_id: Number(e.target.value) } as any)}
+                        className="border rounded px-2 py-1 text-sm"
+                      >
+                        {tenants.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.id === 0 ? "system" : t.slug}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  )}
                   <td className="p-3">
                     <button
                       onClick={() => updateUser(u.id, { active: !u.active } as any)}
@@ -400,25 +422,31 @@ export default function AdminUsersPage() {
                 </p>
               )}
             </div>
-            <div>
-              <label className="block text-sm mb-1">Tenant</label>
-              <select
-                value={form.tenant_id}
-                onChange={(e) => setForm({ ...form, tenant_id: Number(e.target.value) })}
-                className="w-full border rounded px-3 py-2 text-sm"
-                required
-              >
-                {form.role === "super_admin" && <option value={0}>system (0)</option>}
-                {realTenants.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.slug} · {t.name}
-                  </option>
-                ))}
-              </select>
-              {realTenants.length === 0 && form.role !== "super_admin" && (
-                <p className="text-xs text-red-600 mt-1">尚無 tenant，請先到「租戶」建立。</p>
-              )}
-            </div>
+            {isSuper ? (
+              <div>
+                <label className="block text-sm mb-1">Tenant</label>
+                <select
+                  value={form.tenant_id}
+                  onChange={(e) => setForm({ ...form, tenant_id: Number(e.target.value) })}
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  required
+                >
+                  {form.role === "super_admin" && <option value={0}>system (0)</option>}
+                  {realTenants.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.slug} · {t.name}
+                    </option>
+                  ))}
+                </select>
+                {realTenants.length === 0 && form.role !== "super_admin" && (
+                  <p className="text-xs text-red-600 mt-1">尚無 tenant，請先到「租戶」建立。</p>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500">
+                將建立於你自己的 tenant (#{me?.tenant_id})
+              </div>
+            )}
             <div className="flex gap-2 pt-2">
               <button
                 type="submit"

@@ -129,9 +129,11 @@ async def create_patient(
     user: dict = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """管理端建立病患（admin / staff），尚未綁 LINE。之後可呼叫 /patients/bind 關聯。"""
+    """管理端建立病患（admin / staff）。
+    可選 auth_user_id：搭配 /auth/admin/users/invite 的兩段式邀請流程使用。"""
     patient = Patient(
         tenant_id=user["tenant_id"],
+        auth_user_id=payload.auth_user_id,
         name=payload.name,
         sex=payload.sex,
         birth_date=payload.birth_date,
