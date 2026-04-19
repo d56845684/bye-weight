@@ -40,6 +40,7 @@ func main() {
 	r.Post("/auth/logout", h.Logout)
 	r.Get("/auth/health", h.Health)
 	r.Get("/auth/me", h.Me)
+	r.Get("/auth/me/permissions", h.MePermissions)
 
 	// 管理後台 API（由 Nginx 先走 auth_request 擋掉非 super_admin）
 	r.Get("/auth/admin/users", h.ListUsers)
