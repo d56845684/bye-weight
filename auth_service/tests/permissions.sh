@@ -17,7 +17,29 @@ BASE="${BASE:-http://localhost:8080}"
 SUPER_COOKIE=$(mktemp)
 ADMIN_COOKIE=$(mktemp)
 PATIENT_COOKIE=$(mktemp)
-trap 'rm -f "$SUPER_COOKIE" "$ADMIN_COOKIE" "$PATIENT_COOKIE"' EXIT
+
+# 硬刪 + cookie 清除：trap 保證失敗 / ctrl-c 都會跑
+cleanup() {
+    # 拿 user_id 做 Redis revoke key 清除（DELETE user 前抓，刪完 id 就沒了）
+    local uids
+    uids=$(docker compose -f docker-compose.dev.yml exec -T postgres \
+        psql -U postgres -d auth_db -qAtc \
+        "SELECT id FROM users WHERE line_uuid IN ('perm-test-admin','perm-test-patient');" 2>/dev/null)
+    for uid in $uids; do
+        docker compose -f docker-compose.dev.yml exec -T redis redis-cli DEL "auth:user_revoke:$uid" >/dev/null 2>&1 || true
+    done
+
+    # 硬刪測資：users → tenant_services / tenant_roles → tenants
+    docker compose -f docker-compose.dev.yml exec -T postgres psql -U postgres -d auth_db -qAtc "
+        DELETE FROM users WHERE line_uuid IN ('perm-test-admin','perm-test-patient');
+        DELETE FROM tenant_services WHERE tenant_id = (SELECT id FROM tenants WHERE slug='perm-test-tenant');
+        DELETE FROM tenant_roles    WHERE tenant_id = (SELECT id FROM tenants WHERE slug='perm-test-tenant');
+        DELETE FROM tenants WHERE slug='perm-test-tenant';
+    " >/dev/null 2>&1 || true
+
+    rm -f "$SUPER_COOKIE" "$ADMIN_COOKIE" "$PATIENT_COOKIE"
+}
+trap cleanup EXIT
 
 PASS=0
 FAIL=0
