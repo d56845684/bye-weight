@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -11,11 +12,12 @@ import (
 
 // verifySession 接收已解析的 JWT claims，跑後續所有狀態檢查：
 // blacklist → user.active → tenant.active → user_revoke。
-// cookie 解析由 caller 負責（verify/me 用 access_token、refresh 用 refresh_token），
-// 這個 helper 保證三條驗證路徑的擋線行為一致，改一處就生效。
-func (h *Handler) verifySession(r *http.Request, claims *token.Claims) (int, error) {
+// cookie 解析由 caller 負責（access_token 或 refresh_token），這個 helper 保證三條
+// 驗證路徑的擋線行為一致，改一處就生效。收 context.Context 而非 *http.Request
+// 是為了讓 huma handlers 也能直接呼叫（huma 只給 ctx）。
+func (h *Handler) verifySession(ctx context.Context, claims *token.Claims) (int, error) {
 	// fail-closed：Redis 故障時拒絕
-	revoked, err := token.IsRevoked(r.Context(), h.rdb, claims.ID)
+	revoked, err := token.IsRevoked(ctx, h.rdb, claims.ID)
 	if err != nil {
 		return http.StatusServiceUnavailable, errors.New("service unavailable")
 	}
@@ -25,7 +27,7 @@ func (h *Handler) verifySession(r *http.Request, claims *token.Claims) (int, err
 
 	// 確認使用者仍啟用（後台將 active=false 後應立即生效，不等 JWT 過期）
 	var userActive bool
-	if err := h.engine.DB().QueryRow(r.Context(),
+	if err := h.engine.DB().QueryRow(ctx,
 		`SELECT active FROM users WHERE id = $1`, claims.UserID).Scan(&userActive); err != nil {
 		return http.StatusUnauthorized, errors.New("user not found")
 	}
@@ -37,7 +39,7 @@ func (h *Handler) verifySession(r *http.Request, claims *token.Claims) (int, err
 	// 系統 tenant（id=0，super_admin 專用）略過，避免誤操作鎖死後台。
 	if claims.TenantID != 0 {
 		var tenantActive bool
-		if err := h.engine.DB().QueryRow(r.Context(),
+		if err := h.engine.DB().QueryRow(ctx,
 			`SELECT active FROM tenants WHERE id = $1`, claims.TenantID).Scan(&tenantActive); err != nil {
 			return http.StatusUnauthorized, errors.New("tenant not found")
 		}
@@ -49,7 +51,7 @@ func (h *Handler) verifySession(r *http.Request, claims *token.Claims) (int, err
 	// 使用者層級吊銷：admin 拔 LINE 綁定 / 改角色 / 切 tenant 時會寫 Redis。
 	// JWT 簽發時間早於吊銷時間就視為失效，不必等 JWT TTL 到期。
 	if claims.IssuedAt != nil {
-		userRevoked, err := token.IsUserRevoked(r.Context(), h.rdb, claims.UserID, claims.IssuedAt.Time)
+		userRevoked, err := token.IsUserRevoked(ctx, h.rdb, claims.UserID, claims.IssuedAt.Time)
 		if err != nil {
 			return http.StatusServiceUnavailable, errors.New("service unavailable")
 		}
@@ -61,8 +63,8 @@ func (h *Handler) verifySession(r *http.Request, claims *token.Claims) (int, err
 	return http.StatusOK, nil
 }
 
-// verifyIdentity 是 Verify / VerifyPage / Me 共用的入口：拿 access_token cookie、
-// 解 JWT、跑 verifySession。不做 action / resource / policy 檢查。
+// verifyIdentity 是 chi handler 用的入口：從 *http.Request 拿 access_token cookie、
+// 解 JWT、跑 verifySession。
 func (h *Handler) verifyIdentity(r *http.Request) (*token.Claims, int, error) {
 	cookie, err := r.Cookie("access_token")
 	if err != nil {
@@ -72,7 +74,23 @@ func (h *Handler) verifyIdentity(r *http.Request) (*token.Claims, int, error) {
 	if err != nil {
 		return nil, http.StatusUnauthorized, errors.New("invalid token")
 	}
-	if code, err := h.verifySession(r, claims); err != nil {
+	if code, err := h.verifySession(r.Context(), claims); err != nil {
+		return nil, code, err
+	}
+	return claims, http.StatusOK, nil
+}
+
+// verifyIdentityFromCookie 是 huma handler 用的入口：cookie value 由 huma input
+// struct 解好，這裡只做 parse + session checks。空字串（沒帶 cookie）直接 401。
+func (h *Handler) verifyIdentityFromCookie(ctx context.Context, cookieValue string) (*token.Claims, int, error) {
+	if cookieValue == "" {
+		return nil, http.StatusUnauthorized, errors.New("no token")
+	}
+	claims, err := token.Parse(cookieValue, h.cfg.JWTSecret)
+	if err != nil {
+		return nil, http.StatusUnauthorized, errors.New("invalid token")
+	}
+	if code, err := h.verifySession(ctx, claims); err != nil {
 		return nil, code, err
 	}
 	return claims, http.StatusOK, nil

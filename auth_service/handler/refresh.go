@@ -25,7 +25,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 共用 verifySession：blacklist + user.active + tenant.active + user_revoke
-	if code, err := h.verifySession(r, claims); err != nil {
+	if code, err := h.verifySession(r.Context(), claims); err != nil {
 		http.Error(w, err.Error(), code)
 		return
 	}

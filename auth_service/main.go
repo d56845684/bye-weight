@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
@@ -37,10 +39,18 @@ func main() {
 	r.Post("/auth/password-login", h.PasswordLogin)
 	r.Post("/auth/line-bind", h.LineBind)
 	r.Post("/auth/refresh", h.Refresh)
-	r.Post("/auth/logout", h.Logout)
-	r.Get("/auth/health", h.Health)
-	r.Get("/auth/me", h.Me)
-	r.Get("/auth/me/permissions", h.MePermissions)
+
+	// huma pilot：掛在同一個 chi router 上（humachi adapter），這些 endpoint
+	// 自動產 OpenAPI spec 並交叉驗 Input/Output。config 指定 spec + UI 路徑
+	// 是為了 nginx 的 /auth/v1/* rewrite 流能對得上。
+	humaCfg := huma.DefaultConfig("auth_service", "1.0.0")
+	humaCfg.DocsPath = "/auth/docs"
+	humaCfg.OpenAPIPath = "/auth/openapi"
+	api := humachi.New(r, humaCfg)
+	huma.Get(api, "/auth/health", h.HumaHealth)
+	huma.Get(api, "/auth/me", h.HumaMe)
+	huma.Get(api, "/auth/me/permissions", h.HumaMePermissions)
+	huma.Post(api, "/auth/logout", h.HumaLogout)
 
 	// 管理後台 API（由 Nginx 先走 auth_request 擋掉非 super_admin）
 	r.Get("/auth/admin/users", h.ListUsers)
