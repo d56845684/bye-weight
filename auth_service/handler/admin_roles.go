@@ -131,13 +131,26 @@ func (h *Handler) DeleteRole(w http.ResponseWriter, r *http.Request) {
 type policyRow struct {
 	ID       int             `json:"id"`
 	Name     string          `json:"name"`
+	TenantID int             `json:"tenant_id"` // 0 = 系統級；>0 = 某 tenant 自有
 	Document json.RawMessage `json:"document"`
 }
 
 // ListPolicies：GET /auth/admin/policies
+// super_admin 看全部；其他角色只看到自家 tenant + 系統 (tenant_id=0) 的 policy。
 func (h *Handler) ListPolicies(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.engine.DB().Query(r.Context(),
-		`SELECT id, name, document FROM policies ORDER BY name`)
+	role := r.Header.Get("X-User-Role")
+	tenantID, _ := strconv.Atoi(r.Header.Get("X-Tenant-Id"))
+
+	var rows pgx.Rows
+	var err error
+	if role == "super_admin" {
+		rows, err = h.engine.DB().Query(r.Context(),
+			`SELECT id, name, tenant_id, document FROM policies ORDER BY name`)
+	} else {
+		rows, err = h.engine.DB().Query(r.Context(),
+			`SELECT id, name, tenant_id, document FROM policies
+			 WHERE tenant_id IN ($1, 0) ORDER BY name`, tenantID)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -148,7 +161,7 @@ func (h *Handler) ListPolicies(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var p policyRow
 		var docBytes []byte
-		if err := rows.Scan(&p.ID, &p.Name, &docBytes); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.TenantID, &docBytes); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -217,6 +230,44 @@ func (h *Handler) SetRolePolicies(w http.ResponseWriter, r *http.Request) {
 	if lockedFromPolicyEdit[name] {
 		http.Error(w, "system role policies are locked", http.StatusLocked)
 		return
+	}
+
+	// Tenant scope：非 super_admin 只能綁「自家 tenant 或系統 (tenant_id=0)」的 policy
+	// 給 role，避免 clinic-admin 偷綁 super-admin-all 或他 tenant 的 policy。
+	// （IAM 層目前只放 admin:role:write 給 super_admin，clinic-admin 到不了這裡；
+	//   這個 guard 是 Phase 2b 開放 tenant 自管時的前置防線，一起擺上）
+	callerRole := r.Header.Get("X-User-Role")
+	if callerRole != "super_admin" && len(req.PolicyIDs) > 0 {
+		callerTenantID, _ := strconv.Atoi(r.Header.Get("X-Tenant-Id"))
+		rows, err := h.engine.DB().Query(r.Context(),
+			`SELECT id, tenant_id FROM policies WHERE id = ANY($1)`, req.PolicyIDs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		seen := make(map[int]bool, len(req.PolicyIDs))
+		for rows.Next() {
+			var pid, tid int
+			if err := rows.Scan(&pid, &tid); err != nil {
+				rows.Close()
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			seen[pid] = true
+			if tid != 0 && tid != callerTenantID {
+				rows.Close()
+				http.Error(w, "policy outside your tenant cannot be bound", http.StatusForbidden)
+				return
+			}
+		}
+		rows.Close()
+		// 任何 id 不存在 → 400（避免 caller 用幻象 id 悄悄留白）
+		for _, pid := range req.PolicyIDs {
+			if !seen[pid] {
+				http.Error(w, "policy id not found", http.StatusBadRequest)
+				return
+			}
+		}
 	}
 
 	tx, err := h.engine.DB().Begin(r.Context())

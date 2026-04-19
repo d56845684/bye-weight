@@ -12,12 +12,37 @@ import (
 type policyDetail struct {
 	ID        int             `json:"id"`
 	Name      string          `json:"name"`
+	TenantID  int             `json:"tenant_id"`
 	Document  json.RawMessage `json:"document"`
 	RoleNames []string        `json:"role_names"`
 }
 
+// canReadPolicy：super_admin 看全部；其他角色只看得到自家 tenant 與系統（tenant_id=0）。
+// 用 Nginx 注入的 X-User-Role / X-Tenant-Id 做判斷，避免再打 DB。
+func canReadPolicy(r *http.Request, policyTenantID int) bool {
+	if r.Header.Get("X-User-Role") == "super_admin" {
+		return true
+	}
+	actingTenant, _ := strconv.Atoi(r.Header.Get("X-Tenant-Id"))
+	return policyTenantID == actingTenant || policyTenantID == 0
+}
+
+// canWritePolicy：比 read 嚴格 —— **系統 policy (tenant_id=0) 只有 super_admin 能改**；
+// 其他人只能改自家 tenant 的。
+func canWritePolicy(r *http.Request, policyTenantID int) bool {
+	if r.Header.Get("X-User-Role") == "super_admin" {
+		return true
+	}
+	if policyTenantID == 0 {
+		return false // 非 super 不能動系統 policy
+	}
+	actingTenant, _ := strconv.Atoi(r.Header.Get("X-Tenant-Id"))
+	return policyTenantID == actingTenant
+}
+
 // GetPolicy：GET /auth/v1/admin/policies/{id}
 // 回傳單一 policy 完整文件 + 使用此 policy 的 role 名稱清單。
+// 非 super 只看得到自家 tenant 或系統 policy；越界回 404（刻意不洩露存在性）。
 func (h *Handler) GetPolicy(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
@@ -28,14 +53,18 @@ func (h *Handler) GetPolicy(w http.ResponseWriter, r *http.Request) {
 	var p policyDetail
 	var docBytes []byte
 	err = h.engine.DB().QueryRow(r.Context(),
-		`SELECT id, name, document FROM policies WHERE id = $1`, id).
-		Scan(&p.ID, &p.Name, &docBytes)
+		`SELECT id, name, tenant_id, document FROM policies WHERE id = $1`, id).
+		Scan(&p.ID, &p.Name, &p.TenantID, &docBytes)
 	if err == pgx.ErrNoRows {
 		http.Error(w, "policy not found", http.StatusNotFound)
 		return
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !canReadPolicy(r, p.TenantID) {
+		http.Error(w, "policy not found", http.StatusNotFound)
 		return
 	}
 	p.Document = json.RawMessage(docBytes)
@@ -70,10 +99,28 @@ type updatePolicyRequest struct {
 // UpdatePolicy：PATCH /auth/v1/admin/policies/{id}
 // 目前僅允許改 document（name 做歷史錨點，不開放改）。
 // 後端驗證 JSON 結構；validation 失敗直接 400。
+// Tenant scope：系統 policy (tenant_id=0) 非 super_admin 不可改；跨 tenant 也擋。
 func (h *Handler) UpdatePolicy(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	// 先撈 tenant_id 做授權決策
+	var policyTenant int
+	if err := h.engine.DB().QueryRow(r.Context(),
+		`SELECT tenant_id FROM policies WHERE id = $1`, id).Scan(&policyTenant); err != nil {
+		if err == pgx.ErrNoRows {
+			http.Error(w, "policy not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !canWritePolicy(r, policyTenant) {
+		// 跨 tenant 或非 super 改 system policy → 403 明示
+		http.Error(w, "cannot modify policies outside your tenant", http.StatusForbidden)
 		return
 	}
 
