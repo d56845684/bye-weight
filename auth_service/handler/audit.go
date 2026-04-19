@@ -17,6 +17,18 @@ func actingUserID(r *http.Request) int {
 	return id
 }
 
+// callerTenantID 從 X-Tenant-Id header 取；0 代表 system tenant = super_admin。
+// 非 super_admin 的 admin handler 用這個值來限縮查詢 / 操作範圍。
+func callerTenantID(r *http.Request) int {
+	id, _ := strconv.Atoi(r.Header.Get("X-Tenant-Id"))
+	return id
+}
+
+// isSuperAdmin：caller 是否為 super_admin（system tenant）。
+func isSuperAdmin(r *http.Request) bool {
+	return callerTenantID(r) == 0
+}
+
 // withAudit 在一個 transaction 內先 SET LOCAL app.current_user，再呼叫 fn 執行
 // INSERT / UPDATE / DELETE。trigger audit_autofill() 就能讀到 user_id 寫入
 // created_by / updated_by 欄位。

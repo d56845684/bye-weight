@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 // 每 10 分鐘 silent refresh；access token TTL 是 1 小時，保留充足 buffer
 const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
@@ -19,8 +19,11 @@ async function silentRefresh() {
   }
 }
 
+type Me = { user_id: number; role: string; tenant_id: number };
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const [me, setMe] = useState<Me | null>(null);
 
   const logout = async () => {
     await fetch("/auth/v1/logout", { method: "POST", credentials: "include" });
@@ -28,13 +31,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   };
 
   useEffect(() => {
-    // 1) 進頁面先 refresh 一次，確保 access token 剛被換新
     silentRefresh();
+    // 讀 /me 決定要渲染哪些 nav
+    (async () => {
+      try {
+        const res = await fetch("/auth/v1/me", { credentials: "include" });
+        if (res.ok) setMe(await res.json());
+        else router.push("/admin/login");
+      } catch {
+        router.push("/admin/login");
+      }
+    })();
 
-    // 2) 定期背景 refresh
     const interval = setInterval(silentRefresh, REFRESH_INTERVAL_MS);
-
-    // 3) 頁面重新聚焦（切回分頁、從睡眠喚醒）也觸發 refresh
     const onVisible = () => {
       if (document.visibilityState === "visible") silentRefresh();
     };
@@ -44,7 +53,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
+  }, [router]);
+
+  const isSuper = me?.role === "super_admin";
+  const canUsers = isSuper || me?.role === "admin";   // 系統級或診所管理員
+  const canPatients = !!me && me.role !== "patient";  // 除了 patient 之外都看得到
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -52,12 +65,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <div className="max-w-5xl mx-auto flex items-center gap-6">
           <span className="font-bold">管理後台</span>
           <div className="flex gap-4 text-sm">
-            <Link href="/admin/tenants" className="hover:underline">租戶</Link>
-            <Link href="/admin/users" className="hover:underline">使用者</Link>
-            <Link href="/admin/roles" className="hover:underline">角色</Link>
-            <Link href="/admin/policies" className="hover:underline">Policy</Link>
+            {isSuper && <Link href="/admin/tenants" className="hover:underline">租戶</Link>}
+            {canUsers && <Link href="/admin/users" className="hover:underline">使用者</Link>}
+            {isSuper && <Link href="/admin/roles" className="hover:underline">角色</Link>}
+            {isSuper && <Link href="/admin/policies" className="hover:underline">Policy</Link>}
+            {canPatients && <Link href="/admin/patients" className="hover:underline">病患</Link>}
           </div>
-          <button onClick={logout} className="ml-auto text-xs px-3 py-1 border border-white/40 rounded hover:bg-red-800">
+          {me && (
+            <span className="ml-auto text-xs opacity-80">
+              {me.role}
+              {me.tenant_id !== 0 && <span className="ml-1">@ tenant {me.tenant_id}</span>}
+            </span>
+          )}
+          <button onClick={logout} className="text-xs px-3 py-1 border border-white/40 rounded hover:bg-red-800">
             登出
           </button>
         </div>

@@ -3,12 +3,14 @@ from datetime import date, datetime
 from sqlalchemy import Boolean, Date, Integer, String, DateTime
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from models._mixin import AuditMixin
+
 
 class Base(DeclarativeBase):
     pass
 
 
-class Patient(Base):
+class Patient(AuditMixin, Base):
     __tablename__ = "patients"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -22,10 +24,12 @@ class Patient(Base):
     birth_date: Mapped[date] = mapped_column(Date, nullable=False)
     phone: Mapped[str | None] = mapped_column(String(20))
     email: Mapped[str | None] = mapped_column(String(100))
+    national_id: Mapped[str | None] = mapped_column(String(20))
+    address: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
-class LineBinding(Base):
+class LineBinding(AuditMixin, Base):
     __tablename__ = "line_bindings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -36,7 +40,7 @@ class LineBinding(Base):
     bound_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
-class Employee(Base):
+class Employee(AuditMixin, Base):
     __tablename__ = "employees"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

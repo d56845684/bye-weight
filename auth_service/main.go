@@ -31,6 +31,7 @@ func main() {
 
 	// 對外（Nginx auth_request + 登入/登出）
 	r.Get("/auth/verify", h.Verify)
+	r.Get("/auth/verify-page", h.VerifyPage)
 	r.Post("/auth/line-token", h.LineLogin)
 	r.Post("/auth/google", h.GoogleLogin)
 	r.Post("/auth/password-login", h.PasswordLogin)
@@ -44,8 +45,10 @@ func main() {
 	r.Get("/auth/admin/users", h.ListUsers)
 	r.Post("/auth/admin/users", h.CreateUser)
 	r.Patch("/auth/admin/users/{id}", h.UpdateUser)
+	r.Delete("/auth/admin/users/{id}", h.DeleteUser)
 	r.Post("/auth/admin/users/{id}/binding-token", h.RegenerateBindToken)
 	r.Post("/auth/admin/users/{id}/unbind", h.UnbindUser)
+	r.Post("/auth/admin/users/{id}/password", h.SetUserPassword)
 
 	r.Get("/auth/admin/roles", h.ListRoles)
 	r.Post("/auth/admin/roles", h.CreateRole)

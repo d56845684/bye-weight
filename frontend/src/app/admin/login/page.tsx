@@ -29,7 +29,8 @@ export default function AdminLoginPage() {
       if (data.role !== "super_admin" && data.role !== "admin") {
         throw new Error(`此帳號角色為 ${data.role}，無權登入後台`);
       }
-      router.push("/admin/tenants");
+      // super_admin → 系統後台；clinic-admin → 診所後台
+      router.push(data.role === "super_admin" ? "/admin/tenants" : "/admin/patients");
     } catch (e: any) {
       setError(e.message);
     } finally {

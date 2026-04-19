@@ -4,9 +4,10 @@ from sqlalchemy import Date, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models.patient import Base
+from models._mixin import AuditMixin
 
 
-class Visit(Base):
+class Visit(AuditMixin, Base):
     __tablename__ = "visits"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -19,7 +20,7 @@ class Visit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
-class Medication(Base):
+class Medication(AuditMixin, Base):
     __tablename__ = "medications"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

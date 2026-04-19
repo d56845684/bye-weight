@@ -155,6 +155,44 @@ export default function AdminUsersPage() {
     load();
   };
 
+  const setPassword = async (u: User) => {
+    const label = u.display_name || `#${u.id}`;
+    const email = prompt(`設定「${label}」的登入 email：`, u.google_email ?? "");
+    if (!email) return;
+    const password = prompt("初始密碼（至少 8 碼）：");
+    if (!password || password.length < 8) {
+      if (password !== null) alert("密碼至少 8 碼");
+      return;
+    }
+    const res = await fetch(`/auth/v1/admin/users/${u.id}/password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email, password }),
+    });
+    if (!res.ok) {
+      alert(`設定失敗：${await res.text()}`);
+      return;
+    }
+    alert(`已設定 ${label} 的 email / 密碼，現有 session 全部失效`);
+    load();
+  };
+
+  const softDelete = async (u: User) => {
+    const label = u.display_name || `#${u.id}`;
+    if (!confirm(`軟刪除 ${label}？\n\n動作：停用帳號、清掉 LINE 綁定、現有 session 全部失效。\n記錄保留於 DB（deleted_at / deleted_by），未來可恢復。\n\n確定？`))
+      return;
+    const res = await fetch(`/auth/v1/admin/users/${u.id}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      alert(`刪除失敗：${await res.text()}`);
+      return;
+    }
+    load();
+  };
+
   const absoluteURL = (u: string) =>
     u.startsWith("http") ? u : `${window.location.origin}${u}`;
 
@@ -276,7 +314,7 @@ export default function AdminUsersPage() {
                       {u.active ? "啟用" : "停用"}
                     </button>
                   </td>
-                  <td className="p-3">
+                  <td className="p-3 space-x-3">
                     {u.binding_status === "pending" && (
                       <button
                         onClick={() => regenerate(u.id)}
@@ -293,6 +331,22 @@ export default function AdminUsersPage() {
                         解除綁定
                       </button>
                     )}
+                    <button
+                      onClick={() => setPassword(u)}
+                      disabled={u.role === "super_admin"}
+                      title={u.role === "super_admin" ? "super_admin 請直接改 DB" : "設定 email + 密碼"}
+                      className="text-xs text-gray-500 hover:text-red-700 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      設密碼
+                    </button>
+                    <button
+                      onClick={() => softDelete(u)}
+                      disabled={u.role === "super_admin"}
+                      title={u.role === "super_admin" ? "super_admin 不可刪除" : "軟刪除"}
+                      className="text-xs text-gray-500 hover:text-red-700 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      刪除
+                    </button>
                   </td>
                 </tr>
               ))}

@@ -15,7 +15,9 @@ import (
 var tenantSlugRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,49}$`)
 
 // 新 tenant 建立時預設訂閱的服務與角色（不含 admin / super_admin；這些是系統級）
-var defaultTenantServices = []string{"auth", "main", "frontend"}
+// 新 tenant 預設訂的 services。admin 加進去，讓該 tenant 的 clinic-admin
+// 能進 /admin/* 後台。super-admin 的政策本來就含 *:* 不受影響。
+var defaultTenantServices = []string{"auth", "main", "frontend", "admin"}
 var defaultTenantRoles = []string{"patient", "staff", "nutritionist", "admin"}
 
 type tenantRow struct {
