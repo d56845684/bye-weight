@@ -31,26 +31,29 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	// 對外（Nginx auth_request + 登入/登出）
+	// chi-only：Nginx auth_request 呼叫的內部端點（不進 OpenAPI UI 比較乾淨）
 	r.Get("/auth/verify", h.Verify)
 	r.Get("/auth/verify-page", h.VerifyPage)
-	r.Post("/auth/line-token", h.LineLogin)
-	r.Post("/auth/google", h.GoogleLogin)
-	r.Post("/auth/password-login", h.PasswordLogin)
-	r.Post("/auth/line-bind", h.LineBind)
-	r.Post("/auth/refresh", h.Refresh)
 
-	// huma pilot：掛在同一個 chi router 上（humachi adapter），這些 endpoint
-	// 自動產 OpenAPI spec 並交叉驗 Input/Output。config 指定 spec + UI 路徑
-	// 是為了 nginx 的 /auth/v1/* rewrite 流能對得上。
+	// huma：對外所有 JSON API 都經此註冊，自動產 OpenAPI spec 並交叉驗
+	// Input/Output。掛在同一個 chi router（humachi adapter）。
 	humaCfg := huma.DefaultConfig("auth_service", "1.0.0")
 	humaCfg.DocsPath = "/auth/docs"
 	humaCfg.OpenAPIPath = "/auth/openapi"
 	api := humachi.New(r, humaCfg)
+
+	// 身份 / 健康
 	huma.Get(api, "/auth/health", h.HumaHealth)
 	huma.Get(api, "/auth/me", h.HumaMe)
 	huma.Get(api, "/auth/me/permissions", h.HumaMePermissions)
 	huma.Post(api, "/auth/logout", h.HumaLogout)
+
+	// 登入 / 綁定 / refresh
+	huma.Post(api, "/auth/line-token", h.HumaLineLogin)
+	huma.Post(api, "/auth/line-bind", h.HumaLineBind)
+	huma.Post(api, "/auth/refresh", h.HumaRefresh)
+	huma.Post(api, "/auth/password-login", h.HumaPasswordLogin)
+	huma.Post(api, "/auth/google", h.HumaGoogleLogin)
 
 	// 管理後台 API（由 Nginx 先走 auth_request 擋掉非 super_admin）
 	r.Get("/auth/admin/users", h.ListUsers)
@@ -92,7 +95,7 @@ func main() {
 
 	// Dev-only：非 production 才掛上，handler 內也會再檢查一次
 	if cfg.Env != "production" {
-		r.Post("/auth/dev-login", h.DevLogin)
+		huma.Post(api, "/auth/dev-login", h.HumaDevLogin)
 		log.Println("dev-login endpoint enabled at POST /auth/dev-login")
 	}
 

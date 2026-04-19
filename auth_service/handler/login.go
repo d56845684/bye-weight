@@ -6,89 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"auth_service/token"
 )
 
-type lineTokenRequest struct {
-	AccessToken string `json:"access_token"`
-}
+// login.go：LINE 登入 / 綁定流共用的 helpers + 資料結構。
+// handler 入口（HumaLineLogin / HumaLineBind）在 huma_login.go。
 
 type lineProfile struct {
 	UserID      string `json:"userId"`
 	DisplayName string `json:"displayName"`
 }
 
-func (h *Handler) LineLogin(w http.ResponseWriter, r *http.Request) {
-	var req lineTokenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	profile, err := verifyLineToken(req.AccessToken)
-	if err != nil {
-		http.Error(w, "invalid LINE token", http.StatusUnauthorized)
-		return
-	}
-
-	user, err := h.findUserByLineUUID(r.Context(), profile.UserID)
-	if err != nil {
-		http.Error(w, "not bound — contact admin for a binding link", http.StatusUnauthorized)
-		return
-	}
-
-	accessToken, err := token.Issue(
-		user.ID, user.RoleName, user.TenantID,
-		"access", h.cfg.AccessTokenExpire, h.cfg.JWTSecret,
-	)
-	if err != nil {
-		http.Error(w, "token issue failed", http.StatusInternalServerError)
-		return
-	}
-
-	refreshToken, err := token.Issue(
-		user.ID, user.RoleName, user.TenantID,
-		"refresh", h.cfg.RefreshTokenExpire, h.cfg.JWTSecret,
-	)
-	if err != nil {
-		http.Error(w, "token issue failed", http.StatusInternalServerError)
-		return
-	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "access_token",
-		Value:    accessToken,
-		HttpOnly: true,
-		Secure:   h.cfg.Env == "production",
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(h.cfg.AccessTokenExpire.Seconds()),
-		Path:     "/",
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     "refresh_token",
-		Value:    refreshToken,
-		HttpOnly: true,
-		Secure:   h.cfg.Env == "production",
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(h.cfg.RefreshTokenExpire.Seconds()),
-		Path:     "/auth/v1/refresh",
-	})
-
-	_ = logLogin(r.Context(), h.engine.DB(), user.ID, r, "line")
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"user_id":   user.ID,
-		"role":      user.RoleName,
-		"tenant_id": user.TenantID,
-	})
-}
-
-func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
-	// TODO: Google OAuth 驗證 + JWT 發行（與 LineLogin 類似）
-	http.Error(w, "not implemented", http.StatusNotImplemented)
-}
-
+// verifyLineToken：向 LINE API 驗 access token，回該 LINE 使用者 profile。
 func verifyLineToken(accessToken string) (*lineProfile, error) {
 	req, _ := http.NewRequest("GET", "https://api.line.me/v2/profile", nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -111,13 +39,15 @@ func verifyLineToken(accessToken string) (*lineProfile, error) {
 	return &profile, nil
 }
 
-// userRow 是登入流程內部用的輕量投影：最少欄位即可發 JWT。
+// userRow：登入流程內部用的輕量投影 —— 最少欄位即可發 JWT。
 type userRow struct {
 	ID       int
 	RoleName string
 	TenantID int
 }
 
+// findUserByLineUUID：以 LINE UUID 查對應的 active user。用於 LineLogin /
+// LineBind post-bind re-lookup。
 func (h *Handler) findUserByLineUUID(ctx context.Context, lineUUID string) (*userRow, error) {
 	var u userRow
 	err := h.engine.DB().QueryRow(ctx, `
