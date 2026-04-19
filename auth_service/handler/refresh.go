@@ -19,43 +19,15 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid refresh token", http.StatusUnauthorized)
 		return
 	}
-
 	if claims.TokenType != "refresh" {
 		http.Error(w, "not a refresh token", http.StatusUnauthorized)
 		return
 	}
 
-	revoked, err := token.IsRevoked(r.Context(), h.rdb, claims.ID)
-	if err != nil {
-		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+	// 共用 verifySession：blacklist + user.active + tenant.active + user_revoke
+	if code, err := h.verifySession(r, claims); err != nil {
+		http.Error(w, err.Error(), code)
 		return
-	}
-	if revoked {
-		http.Error(w, "token revoked", http.StatusUnauthorized)
-		return
-	}
-
-	// 停用的 user 不給換新 access token
-	var active bool
-	if err := h.engine.DB().QueryRow(r.Context(),
-		`SELECT active FROM users WHERE id = $1`, claims.UserID).Scan(&active); err != nil {
-		http.Error(w, "user not found", http.StatusUnauthorized)
-		return
-	}
-	if !active {
-		http.Error(w, "account disabled", http.StatusUnauthorized)
-		return
-	}
-
-	// user-level 吊銷檢查（行為同 verify.go）
-	if claims.IssuedAt != nil {
-		if userRevoked, err := token.IsUserRevoked(r.Context(), h.rdb, claims.UserID, claims.IssuedAt.Time); err != nil {
-			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
-			return
-		} else if userRevoked {
-			http.Error(w, "session revoked by admin", http.StatusUnauthorized)
-			return
-		}
 	}
 
 	accessToken, err := token.Issue(
