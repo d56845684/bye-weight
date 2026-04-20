@@ -65,15 +65,16 @@ func main() {
 	huma.Post(api, "/auth/admin/users/{id}/unbind", h.HumaUnbindUser)
 	huma.Post(api, "/auth/admin/users/{id}/password", h.HumaSetUserPassword)
 
-	r.Get("/auth/admin/roles", h.ListRoles)
-	r.Post("/auth/admin/roles", h.CreateRole)
-	r.Delete("/auth/admin/roles/{id}", h.DeleteRole)
-	r.Get("/auth/admin/roles/{id}/policies", h.GetRolePolicies)
-	r.Put("/auth/admin/roles/{id}/policies", h.SetRolePolicies)
+	// 管理後台 roles / policies — 全 huma（batch 4）
+	huma.Get(api, "/auth/admin/roles", h.HumaListRoles)
+	huma.Post(api, "/auth/admin/roles", h.HumaCreateRole)
+	huma.Delete(api, "/auth/admin/roles/{id}", h.HumaDeleteRole)
+	huma.Get(api, "/auth/admin/roles/{id}/policies", h.HumaGetRolePolicies)
+	huma.Put(api, "/auth/admin/roles/{id}/policies", h.HumaSetRolePolicies)
 
-	r.Get("/auth/admin/policies", h.ListPolicies)
-	r.Get("/auth/admin/policies/{id}", h.GetPolicy)
-	r.Patch("/auth/admin/policies/{id}", h.UpdatePolicy)
+	huma.Get(api, "/auth/admin/policies", h.HumaListPolicies)
+	huma.Get(api, "/auth/admin/policies/{id}", h.HumaGetPolicy)
+	huma.Patch(api, "/auth/admin/policies/{id}", h.HumaUpdatePolicy)
 
 	r.Get("/auth/admin/services", h.ListServices)
 	r.Post("/auth/admin/invalidate", h.InvalidateCache)
