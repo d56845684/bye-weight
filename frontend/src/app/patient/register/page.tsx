@@ -30,6 +30,7 @@ export default function PatientRegisterPage() {
   const [form, setForm] = useState<FormState>(INITIAL);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -54,7 +55,11 @@ export default function PatientRegisterPage() {
         method: "POST",
         body: JSON.stringify({ ...form, national_id: nid }),
       });
-      router.replace("/patient/food-logs");
+      // 綁定完成判定：LINE 綁好 + patient profile 建起來，到這裡才真的「完成」。
+      // 顯示 1.2 秒完成畫面讓使用者有明確感知，再導到主頁。
+      setDone(true);
+      setTimeout(() => router.replace("/patient/food-logs"), 1200);
+      return;
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         setError("資料已存在（身分證可能已被登記，或你已完成註冊）");
@@ -72,6 +77,18 @@ export default function PatientRegisterPage() {
       setSubmitting(false);
     }
   };
+
+  if (done) {
+    return (
+      <div className="max-w-md mx-auto flex flex-col items-center justify-center min-h-[60vh] text-center">
+        <div className="w-16 h-16 rounded-full bg-green-100 text-green-600 flex items-center justify-center text-3xl mb-4">
+          ✓
+        </div>
+        <h1 className="text-xl font-bold mb-1">綁定完成</h1>
+        <p className="text-sm text-gray-500">已建立病患資料，正在前往首頁…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-md mx-auto">

@@ -74,3 +74,28 @@ async def get_db(
     finally:
         _tenant_cv.reset(tenant_token)
         _user_cv.reset(user_token)
+
+
+class session_context:
+    """Non-HTTP caller 用的 session opener（LINE webhook、Cloud Scheduler 等）。
+    行為跟 get_db 相同：進 tx 時 SET LOCAL app.current_tenant / app.current_user，
+    觸發 RLS + audit_autofill。caller 拿到 tenant_id / user_id 後 wrap 即可。
+
+        async with session_context(tenant_id=5, user_id=42) as db:
+            await ingest_inbody(db, ...)
+    """
+
+    def __init__(self, tenant_id: int | None, user_id: int | None):
+        self.tenant_id = tenant_id
+        self.user_id = user_id
+
+    async def __aenter__(self):
+        self._tenant_token = _tenant_cv.set(self.tenant_id)
+        self._user_token = _user_cv.set(self.user_id)
+        self._session = async_session()
+        return await self._session.__aenter__()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._session.__aexit__(exc_type, exc_val, exc_tb)
+        _tenant_cv.reset(self._tenant_token)
+        _user_cv.reset(self._user_token)

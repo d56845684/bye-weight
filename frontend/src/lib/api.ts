@@ -10,6 +10,24 @@ export class ApiError extends Error {
   }
 }
 
+// huma v2 回 RFC 7807 envelope：{$schema, title, status, detail, errors?}
+// 直接把整包 JSON 甩到 UI 上很不友善，這裡抽出 detail/title 給使用者看。
+export function humaMessage(body: string): string {
+  try {
+    const j = JSON.parse(body);
+    if (Array.isArray(j?.errors) && j.errors.length) {
+      // validation：把每條 path + message 串起來
+      return j.errors
+        .map((e: any) => (e.location ? `${e.location}: ` : "") + (e.message ?? ""))
+        .filter(Boolean)
+        .join("；");
+    }
+    return j?.detail || j?.title || body;
+  } catch {
+    return body;
+  }
+}
+
 // 集中式 status interceptor：401 試 refresh → 失敗導 /liff；403 導 /forbidden。
 // Pages 繼續維持 .catch(console.error) 即可。
 function handleUnauthorized(): never {
@@ -58,6 +76,9 @@ export async function fetchAPI<T>(
 
   if (res.status === 403) handleForbidden();
 
-  if (!res.ok) throw new ApiError(res.status, `API error: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text();
+    throw new ApiError(res.status, humaMessage(body) || `API error: ${res.status}`);
+  }
   return res.json();
 }

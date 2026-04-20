@@ -51,9 +51,13 @@ func main() {
 	// 登入 / 綁定 / refresh
 	huma.Post(api, "/auth/line-token", h.HumaLineLogin)
 	huma.Post(api, "/auth/line-bind", h.HumaLineBind)
+	huma.Post(api, "/auth/line-friendship-check", h.HumaLineFriendshipCheck)
 	huma.Post(api, "/auth/refresh", h.HumaRefresh)
 	huma.Post(api, "/auth/password-login", h.HumaPasswordLogin)
 	huma.Post(api, "/auth/google", h.HumaGoogleLogin)
+
+	// Internal service-to-service endpoints（shared secret 保護；不走 user JWT）
+	huma.Get(api, "/auth/internal/users/by-line-uuid", h.HumaResolveSenderByLineUUID)
 
 	// 管理後台 users API — 全 huma（batch 3）
 	huma.Get(api, "/auth/admin/users", h.HumaListUsers)

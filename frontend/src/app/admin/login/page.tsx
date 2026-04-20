@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { humaMessage } from "@/lib/api";
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -23,7 +24,9 @@ export default function AdminLoginPage() {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `HTTP ${res.status}`);
+        // 401 = 帳密錯 / 帳號停用；對使用者只顯示一句話，不要漏是哪個
+        if (res.status === 401) throw new Error("帳號或密碼錯誤，或此帳號已停用");
+        throw new Error(humaMessage(text) || `HTTP ${res.status}`);
       }
       const data = await res.json();
       if (data.role !== "super_admin" && data.role !== "admin") {

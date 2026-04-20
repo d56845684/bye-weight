@@ -14,6 +14,7 @@ async def ocr_inbody(image_bytes: bytes) -> dict:
         [
             "請辨識這張 InBody 體組成報告，回傳 JSON 格式：",
             '{ "name": "姓名", "birth_date": "YYYY-MM-DD", '
+            '"chart_no": "病歷號（若無則 null）", '
             '"weight": 數字, "bmi": 數字, "body_fat_pct": 數字, '
             '"muscle_mass": 數字, "visceral_fat": 整數, "metabolic_rate": 整數 }',
             "只回傳 JSON，不要其他文字。",
