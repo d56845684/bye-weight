@@ -12,7 +12,7 @@ type User = {
   tenant_id: number;
   tenant_slug: string;
   active: boolean;
-  binding_status: "bound" | "pending" | "password_only";
+  auth_methods: ("line" | "password")[];
 };
 
 type Tenant = {
@@ -268,33 +268,34 @@ export default function AdminUsersPage() {
                     />
                   </td>
                   <td className="p-3">
-                    {u.binding_status === "bound" && (
-                      <div className="flex flex-col gap-1">
-                        <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded w-fit">
-                          已綁 LINE
-                        </span>
-                        <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(u.line_uuid ?? "");
-                          }}
-                          title={`點擊複製：${u.line_uuid}`}
-                          className="text-xs font-mono text-gray-500 hover:text-red-700 text-left"
-                        >
-                          {u.line_uuid ? `${u.line_uuid.slice(0, 6)}…${u.line_uuid.slice(-6)}` : ""}
-                        </button>
-                      </div>
-                    )}
-                    {u.binding_status === "pending" && (
+                    {u.auth_methods.length === 0 ? (
                       <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
                         待綁定
                       </span>
-                    )}
-                    {u.binding_status === "password_only" && (
+                    ) : (
                       <div className="flex flex-col gap-1">
-                        <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded w-fit">
-                          密碼帳號
-                        </span>
-                        <span className="text-xs text-gray-500">{u.google_email}</span>
+                        {u.auth_methods.includes("line") && (
+                          <div className="flex flex-col">
+                            <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded w-fit">
+                              LINE
+                            </span>
+                            <button
+                              onClick={() => navigator.clipboard.writeText(u.line_uuid ?? "")}
+                              title={`點擊複製：${u.line_uuid}`}
+                              className="text-xs font-mono text-gray-500 hover:text-red-700 text-left"
+                            >
+                              {u.line_uuid ? `${u.line_uuid.slice(0, 6)}…${u.line_uuid.slice(-6)}` : ""}
+                            </button>
+                          </div>
+                        )}
+                        {u.auth_methods.includes("password") && (
+                          <div className="flex flex-col">
+                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded w-fit">
+                              密碼
+                            </span>
+                            <span className="text-xs text-gray-500">{u.google_email}</span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </td>
@@ -337,7 +338,7 @@ export default function AdminUsersPage() {
                     </button>
                   </td>
                   <td className="p-3 space-x-3">
-                    {u.binding_status === "pending" && (
+                    {!u.auth_methods.includes("line") && (
                       <button
                         onClick={() => regenerate(u.id)}
                         className="text-xs text-red-700 hover:underline"
@@ -345,7 +346,7 @@ export default function AdminUsersPage() {
                         產生綁定連結
                       </button>
                     )}
-                    {u.binding_status === "bound" && (
+                    {u.auth_methods.includes("line") && (
                       <button
                         onClick={() => unbind(u)}
                         className="text-xs text-red-700 hover:underline"

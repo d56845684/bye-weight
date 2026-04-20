@@ -301,6 +301,37 @@ func (e *Engine) Check(sub Subject, action, resource string) bool {
 	return hasAllow
 }
 
+// ResolveActionsForSubject 回傳該 subject 在當前 role 的所有 allow 動作（flat、
+// 去重、排序）。供 /me/permissions 給前端做 <Can> UI gating 用；純讀 in-memory
+// 快取，不打 DB，~μs 級。
+//
+// **只收 effect=allow**，deny 語句被刻意忽略：UI 是 approximation，
+// 真正 deny 由 API 層 (engine.Check) 擋；「顯示了不該顯示的按鈕，按下去 403 →
+// redirect /forbidden」是可接受的 degrade，不值得把 glob-vs-glob 減法帶進前端。
+func (e *Engine) ResolveActionsForSubject(sub Subject) []string {
+	e.mu.RLock()
+	policies := e.rolePolicies[sub.Role]
+	e.mu.RUnlock()
+
+	seen := make(map[string]struct{})
+	for _, doc := range policies {
+		for _, stmt := range doc.Statements {
+			if strings.ToLower(stmt.Effect) != "allow" {
+				continue
+			}
+			for _, act := range stmt.Actions {
+				seen[act] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for act := range seen {
+		out = append(out, act)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // SubstituteResource 把 resource_template 中的 ${auth:*}/${path.*} 展開為具體 ARN。
 func SubstituteResource(template string, sub Subject, pathAttrs map[string]string) string {
 	subs := authSubstitutions(sub)

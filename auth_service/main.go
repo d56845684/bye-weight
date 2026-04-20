@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
@@ -29,59 +31,74 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	// 對外（Nginx auth_request + 登入/登出）
+	// chi-only：Nginx auth_request 呼叫的內部端點（不進 OpenAPI UI 比較乾淨）
 	r.Get("/auth/verify", h.Verify)
 	r.Get("/auth/verify-page", h.VerifyPage)
-	r.Post("/auth/line-token", h.LineLogin)
-	r.Post("/auth/google", h.GoogleLogin)
-	r.Post("/auth/password-login", h.PasswordLogin)
-	r.Post("/auth/line-bind", h.LineBind)
-	r.Post("/auth/refresh", h.Refresh)
-	r.Post("/auth/logout", h.Logout)
-	r.Get("/auth/health", h.Health)
-	r.Get("/auth/me", h.Me)
 
-	// 管理後台 API（由 Nginx 先走 auth_request 擋掉非 super_admin）
-	r.Get("/auth/admin/users", h.ListUsers)
-	r.Post("/auth/admin/users", h.CreateUser)
-	r.Post("/auth/admin/users/invite", h.InvitePatient)
-	r.Patch("/auth/admin/users/{id}", h.UpdateUser)
-	r.Delete("/auth/admin/users/{id}", h.DeleteUser)
-	r.Post("/auth/admin/users/{id}/binding-token", h.RegenerateBindToken)
-	r.Post("/auth/admin/users/{id}/unbind", h.UnbindUser)
-	r.Post("/auth/admin/users/{id}/password", h.SetUserPassword)
+	// huma：對外所有 JSON API 都經此註冊，自動產 OpenAPI spec 並交叉驗
+	// Input/Output。掛在同一個 chi router（humachi adapter）。
+	humaCfg := huma.DefaultConfig("auth_service", "1.0.0")
+	humaCfg.DocsPath = "/auth/docs"
+	humaCfg.OpenAPIPath = "/auth/openapi"
+	api := humachi.New(r, humaCfg)
 
-	r.Get("/auth/admin/roles", h.ListRoles)
-	r.Post("/auth/admin/roles", h.CreateRole)
-	r.Delete("/auth/admin/roles/{id}", h.DeleteRole)
-	r.Get("/auth/admin/roles/{id}/policies", h.GetRolePolicies)
-	r.Put("/auth/admin/roles/{id}/policies", h.SetRolePolicies)
+	// 身份 / 健康
+	huma.Get(api, "/auth/health", h.HumaHealth)
+	huma.Get(api, "/auth/me", h.HumaMe)
+	huma.Get(api, "/auth/me/permissions", h.HumaMePermissions)
+	huma.Post(api, "/auth/logout", h.HumaLogout)
 
-	r.Get("/auth/admin/policies", h.ListPolicies)
-	r.Get("/auth/admin/policies/{id}", h.GetPolicy)
-	r.Patch("/auth/admin/policies/{id}", h.UpdatePolicy)
+	// 登入 / 綁定 / refresh
+	huma.Post(api, "/auth/line-token", h.HumaLineLogin)
+	huma.Post(api, "/auth/line-bind", h.HumaLineBind)
+	huma.Post(api, "/auth/refresh", h.HumaRefresh)
+	huma.Post(api, "/auth/password-login", h.HumaPasswordLogin)
+	huma.Post(api, "/auth/google", h.HumaGoogleLogin)
 
-	r.Get("/auth/admin/services", h.ListServices)
-	r.Post("/auth/admin/invalidate", h.InvalidateCache)
+	// 管理後台 users API — 全 huma（batch 3）
+	huma.Get(api, "/auth/admin/users", h.HumaListUsers)
+	huma.Post(api, "/auth/admin/users", h.HumaCreateUser)
+	huma.Post(api, "/auth/admin/users/invite", h.HumaInvitePatient)
+	huma.Patch(api, "/auth/admin/users/{id}", h.HumaUpdateUser)
+	huma.Delete(api, "/auth/admin/users/{id}", h.HumaDeleteUser)
+	huma.Post(api, "/auth/admin/users/{id}/binding-token", h.HumaRegenerateBindToken)
+	huma.Post(api, "/auth/admin/users/{id}/unbind", h.HumaUnbindUser)
+	huma.Post(api, "/auth/admin/users/{id}/password", h.HumaSetUserPassword)
 
-	r.Get("/auth/admin/action-mappings", h.ListActionMappings)
-	r.Post("/auth/admin/action-mappings", h.CreateActionMapping)
-	r.Patch("/auth/admin/action-mappings/{id}", h.UpdateActionMapping)
-	r.Delete("/auth/admin/action-mappings/{id}", h.DeleteActionMapping)
+	// 管理後台 roles / policies — 全 huma（batch 4）
+	huma.Get(api, "/auth/admin/roles", h.HumaListRoles)
+	huma.Post(api, "/auth/admin/roles", h.HumaCreateRole)
+	huma.Delete(api, "/auth/admin/roles/{id}", h.HumaDeleteRole)
+	huma.Get(api, "/auth/admin/roles/{id}/policies", h.HumaGetRolePolicies)
+	huma.Put(api, "/auth/admin/roles/{id}/policies", h.HumaSetRolePolicies)
 
-	r.Get("/auth/admin/tenants", h.ListTenants)
-	r.Post("/auth/admin/tenants", h.CreateTenant)
-	r.Get("/auth/admin/tenants/{id}", h.GetTenant)
-	r.Patch("/auth/admin/tenants/{id}", h.UpdateTenant)
-	r.Delete("/auth/admin/tenants/{id}", h.DeleteTenant)
-	r.Get("/auth/admin/tenants/{id}/services", h.GetTenantServices)
-	r.Put("/auth/admin/tenants/{id}/services", h.SetTenantServices)
-	r.Get("/auth/admin/tenants/{id}/roles", h.GetTenantRoles)
-	r.Put("/auth/admin/tenants/{id}/roles", h.SetTenantRoles)
+	huma.Get(api, "/auth/admin/policies", h.HumaListPolicies)
+	huma.Get(api, "/auth/admin/policies/{id}", h.HumaGetPolicy)
+	huma.Patch(api, "/auth/admin/policies/{id}", h.HumaUpdatePolicy)
+
+	// Services / invalidate / action-mappings — 全 huma（batch 5b）
+	huma.Get(api, "/auth/admin/services", h.HumaListServices)
+	huma.Post(api, "/auth/admin/invalidate", h.HumaInvalidateCache)
+
+	huma.Get(api, "/auth/admin/action-mappings", h.HumaListActionMappings)
+	huma.Post(api, "/auth/admin/action-mappings", h.HumaCreateActionMapping)
+	huma.Patch(api, "/auth/admin/action-mappings/{id}", h.HumaUpdateActionMapping)
+	huma.Delete(api, "/auth/admin/action-mappings/{id}", h.HumaDeleteActionMapping)
+
+	// Tenants — 全 huma（batch 5a）
+	huma.Get(api, "/auth/admin/tenants", h.HumaListTenants)
+	huma.Post(api, "/auth/admin/tenants", h.HumaCreateTenant)
+	huma.Get(api, "/auth/admin/tenants/{id}", h.HumaGetTenant)
+	huma.Patch(api, "/auth/admin/tenants/{id}", h.HumaUpdateTenant)
+	huma.Delete(api, "/auth/admin/tenants/{id}", h.HumaDeleteTenant)
+	huma.Get(api, "/auth/admin/tenants/{id}/services", h.HumaGetTenantServices)
+	huma.Put(api, "/auth/admin/tenants/{id}/services", h.HumaSetTenantServices)
+	huma.Get(api, "/auth/admin/tenants/{id}/roles", h.HumaGetTenantRoles)
+	huma.Put(api, "/auth/admin/tenants/{id}/roles", h.HumaSetTenantRoles)
 
 	// Dev-only：非 production 才掛上，handler 內也會再檢查一次
 	if cfg.Env != "production" {
-		r.Post("/auth/dev-login", h.DevLogin)
+		huma.Post(api, "/auth/dev-login", h.HumaDevLogin)
 		log.Println("dev-login endpoint enabled at POST /auth/dev-login")
 	}
 

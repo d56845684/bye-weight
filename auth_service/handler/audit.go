@@ -31,7 +31,8 @@ func isSuperAdmin(r *http.Request) bool {
 
 // withAudit 在一個 transaction 內先 SET LOCAL app.current_user，再呼叫 fn 執行
 // INSERT / UPDATE / DELETE。trigger audit_autofill() 就能讀到 user_id 寫入
-// created_by / updated_by 欄位。
+// created_by / updated_by 欄位。chi handlers 用；huma 那邊請改用 withAuditCtx
+// 直接傳 context + actingUID。
 //
 //	err := withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
 //	    _, err := tx.Exec(r.Context(),
@@ -39,17 +40,22 @@ func isSuperAdmin(r *http.Request) bool {
 //	    return err
 //	})
 func withAudit(r *http.Request, db *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
-	ctx := r.Context()
+	return withAuditCtx(r.Context(), db, actingUserID(r), fn)
+}
+
+// withAuditCtx 是 huma-friendly 版本：caller 自己從 huma Input 拿 acting user id
+// （header:"X-User-Id"），省掉 *http.Request 依賴。
+func withAuditCtx(ctx context.Context, db *pgxpool.Pool, actingUID int, fn func(tx pgx.Tx) error) error {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	if uid := actingUserID(r); uid > 0 {
+	if actingUID > 0 {
 		if _, err := tx.Exec(ctx,
 			"SELECT set_config('app.current_user', $1, true)",
-			fmt.Sprint(uid)); err != nil {
+			fmt.Sprint(actingUID)); err != nil {
 			return err
 		}
 	}

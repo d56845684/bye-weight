@@ -2,82 +2,17 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-
-	"auth_service/token"
 )
+
+// dev_login.go：DevLogin handler 從此處移至 huma_login.go，僅保留 helper。
 
 type devLoginRequest struct {
 	UserID   int    `json:"user_id,omitempty"`
 	LineUUID string `json:"line_uuid,omitempty"`
 }
 
-// DevLogin：僅供非 production 環境測試使用。
-// 直接查 users 表發 JWT cookie，無需 LINE / Google OAuth。
-// 預設 line_uuid=dev-admin（由 000003 migration seed，tenant_id=0 system tenant）。
-func (h *Handler) DevLogin(w http.ResponseWriter, r *http.Request) {
-	if h.cfg.Env == "production" {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-
-	var req devLoginRequest
-	_ = json.NewDecoder(r.Body).Decode(&req) // body 可選
-
-	user, err := h.findUserForDevLogin(r.Context(), req)
-	if err != nil {
-		http.Error(w, "user not found (run migrations to seed dev-admin)", http.StatusUnauthorized)
-		return
-	}
-
-	accessToken, err := token.Issue(
-		user.ID, user.RoleName, user.TenantID,
-		"access", h.cfg.AccessTokenExpire, h.cfg.JWTSecret,
-	)
-	if err != nil {
-		http.Error(w, "token issue failed", http.StatusInternalServerError)
-		return
-	}
-
-	refreshToken, err := token.Issue(
-		user.ID, user.RoleName, user.TenantID,
-		"refresh", h.cfg.RefreshTokenExpire, h.cfg.JWTSecret,
-	)
-	if err != nil {
-		http.Error(w, "token issue failed", http.StatusInternalServerError)
-		return
-	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "access_token",
-		Value:    accessToken,
-		HttpOnly: true,
-		Secure:   false,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(h.cfg.AccessTokenExpire.Seconds()),
-		Path:     "/",
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     "refresh_token",
-		Value:    refreshToken,
-		HttpOnly: true,
-		Secure:   false,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(h.cfg.RefreshTokenExpire.Seconds()),
-		Path:     "/auth/v1/refresh",
-	})
-
-	_ = logLogin(r.Context(), h.engine.DB(), user.ID, r, "dev")
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"user_id":      user.ID,
-		"role":         user.RoleName,
-		"tenant_id":    user.TenantID,
-		"access_token": accessToken, // 方便 curl 測試直接帶 Cookie
-	})
-}
-
+// findUserForDevLogin：依 user_id 或 line_uuid 查 active user。
+// user_id 優先；皆空時預設 line_uuid='dev-admin'（migration 000003 有 seed）。
 func (h *Handler) findUserForDevLogin(ctx context.Context, req devLoginRequest) (*userRow, error) {
 	var u userRow
 	var err error
