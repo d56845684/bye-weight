@@ -55,15 +55,15 @@ func main() {
 	huma.Post(api, "/auth/password-login", h.HumaPasswordLogin)
 	huma.Post(api, "/auth/google", h.HumaGoogleLogin)
 
-	// 管理後台 API（由 Nginx 先走 auth_request 擋掉非 super_admin）
-	r.Get("/auth/admin/users", h.ListUsers)
-	r.Post("/auth/admin/users", h.CreateUser)
-	r.Post("/auth/admin/users/invite", h.InvitePatient)
-	r.Patch("/auth/admin/users/{id}", h.UpdateUser)
-	r.Delete("/auth/admin/users/{id}", h.DeleteUser)
-	r.Post("/auth/admin/users/{id}/binding-token", h.RegenerateBindToken)
-	r.Post("/auth/admin/users/{id}/unbind", h.UnbindUser)
-	r.Post("/auth/admin/users/{id}/password", h.SetUserPassword)
+	// 管理後台 users API — 全 huma（batch 3）
+	huma.Get(api, "/auth/admin/users", h.HumaListUsers)
+	huma.Post(api, "/auth/admin/users", h.HumaCreateUser)
+	huma.Post(api, "/auth/admin/users/invite", h.HumaInvitePatient)
+	huma.Patch(api, "/auth/admin/users/{id}", h.HumaUpdateUser)
+	huma.Delete(api, "/auth/admin/users/{id}", h.HumaDeleteUser)
+	huma.Post(api, "/auth/admin/users/{id}/binding-token", h.HumaRegenerateBindToken)
+	huma.Post(api, "/auth/admin/users/{id}/unbind", h.HumaUnbindUser)
+	huma.Post(api, "/auth/admin/users/{id}/password", h.HumaSetUserPassword)
 
 	r.Get("/auth/admin/roles", h.ListRoles)
 	r.Post("/auth/admin/roles", h.CreateRole)
