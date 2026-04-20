@@ -13,15 +13,17 @@ import (
 const bindTokenTTL = 7 * 24 * time.Hour
 
 type adminUserRow struct {
-	ID            int     `json:"id"`
-	DisplayName   *string `json:"display_name"`
-	LineUUID      *string `json:"line_uuid"`
-	GoogleEmail   *string `json:"google_email"`
-	Role          string  `json:"role"`
-	TenantID      int     `json:"tenant_id"`
-	TenantSlug    string  `json:"tenant_slug"`
-	Active        bool    `json:"active"`
-	BindingStatus string  `json:"binding_status"` // bound / pending / password_only
+	ID          int      `json:"id"`
+	DisplayName *string  `json:"display_name"`
+	LineUUID    *string  `json:"line_uuid"`
+	GoogleEmail *string  `json:"google_email"`
+	Role        string   `json:"role"`
+	TenantID    int      `json:"tenant_id"`
+	TenantSlug  string   `json:"tenant_slug"`
+	Active      bool     `json:"active"`
+	// AuthMethods：該 user 有哪些登入路徑。空陣列 = pending（admin 尚未發綁定
+	// 或密碼）。LINE 與密碼彼此獨立，可以同時存在。
+	AuthMethods []string `json:"auth_methods"`
 }
 
 type createUserResponse struct {

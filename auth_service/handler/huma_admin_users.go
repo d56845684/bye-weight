@@ -79,14 +79,14 @@ func (h *Handler) HumaListUsers(ctx context.Context, in *ListUsersInput) (*ListU
 		); err != nil {
 			return nil, huma.Error500InternalServerError("scan failed: " + err.Error())
 		}
-		switch {
-		case u.LineUUID != nil && *u.LineUUID != "":
-			u.BindingStatus = "bound"
-		case u.GoogleEmail != nil && *u.GoogleEmail != "":
-			u.BindingStatus = "password_only"
-		default:
-			u.BindingStatus = "pending"
+		methods := []string{}
+		if u.LineUUID != nil && *u.LineUUID != "" {
+			methods = append(methods, "line")
 		}
+		if u.GoogleEmail != nil && *u.GoogleEmail != "" {
+			methods = append(methods, "password")
+		}
+		u.AuthMethods = methods
 		users = append(users, u)
 	}
 	out := &ListUsersOutput{}
