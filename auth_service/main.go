@@ -76,23 +76,25 @@ func main() {
 	huma.Get(api, "/auth/admin/policies/{id}", h.HumaGetPolicy)
 	huma.Patch(api, "/auth/admin/policies/{id}", h.HumaUpdatePolicy)
 
-	r.Get("/auth/admin/services", h.ListServices)
-	r.Post("/auth/admin/invalidate", h.InvalidateCache)
+	// Services / invalidate / action-mappings — 全 huma（batch 5b）
+	huma.Get(api, "/auth/admin/services", h.HumaListServices)
+	huma.Post(api, "/auth/admin/invalidate", h.HumaInvalidateCache)
 
-	r.Get("/auth/admin/action-mappings", h.ListActionMappings)
-	r.Post("/auth/admin/action-mappings", h.CreateActionMapping)
-	r.Patch("/auth/admin/action-mappings/{id}", h.UpdateActionMapping)
-	r.Delete("/auth/admin/action-mappings/{id}", h.DeleteActionMapping)
+	huma.Get(api, "/auth/admin/action-mappings", h.HumaListActionMappings)
+	huma.Post(api, "/auth/admin/action-mappings", h.HumaCreateActionMapping)
+	huma.Patch(api, "/auth/admin/action-mappings/{id}", h.HumaUpdateActionMapping)
+	huma.Delete(api, "/auth/admin/action-mappings/{id}", h.HumaDeleteActionMapping)
 
-	r.Get("/auth/admin/tenants", h.ListTenants)
-	r.Post("/auth/admin/tenants", h.CreateTenant)
-	r.Get("/auth/admin/tenants/{id}", h.GetTenant)
-	r.Patch("/auth/admin/tenants/{id}", h.UpdateTenant)
-	r.Delete("/auth/admin/tenants/{id}", h.DeleteTenant)
-	r.Get("/auth/admin/tenants/{id}/services", h.GetTenantServices)
-	r.Put("/auth/admin/tenants/{id}/services", h.SetTenantServices)
-	r.Get("/auth/admin/tenants/{id}/roles", h.GetTenantRoles)
-	r.Put("/auth/admin/tenants/{id}/roles", h.SetTenantRoles)
+	// Tenants — 全 huma（batch 5a）
+	huma.Get(api, "/auth/admin/tenants", h.HumaListTenants)
+	huma.Post(api, "/auth/admin/tenants", h.HumaCreateTenant)
+	huma.Get(api, "/auth/admin/tenants/{id}", h.HumaGetTenant)
+	huma.Patch(api, "/auth/admin/tenants/{id}", h.HumaUpdateTenant)
+	huma.Delete(api, "/auth/admin/tenants/{id}", h.HumaDeleteTenant)
+	huma.Get(api, "/auth/admin/tenants/{id}/services", h.HumaGetTenantServices)
+	huma.Put(api, "/auth/admin/tenants/{id}/services", h.HumaSetTenantServices)
+	huma.Get(api, "/auth/admin/tenants/{id}/roles", h.HumaGetTenantRoles)
+	huma.Put(api, "/auth/admin/tenants/{id}/roles", h.HumaSetTenantRoles)
 
 	// Dev-only：非 production 才掛上，handler 內也會再檢查一次
 	if cfg.Env != "production" {
