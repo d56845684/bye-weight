@@ -15,6 +15,8 @@ type Patient = {
   email: string | null;
   national_id: string | null;
   address: string | null;
+  chart_no: string | null;
+  his_id: string | null;
 };
 
 export default function ClinicPatientsPage() {
@@ -89,11 +91,12 @@ export default function ClinicPatientsPage() {
             <thead className="bg-gray-100 text-left">
               <tr>
                 <th className="p-3">ID</th>
+                <th className="p-3">病歷號</th>
                 <th className="p-3">姓名</th>
                 <th className="p-3">性別</th>
                 <th className="p-3">生日</th>
                 <th className="p-3">電話</th>
-                <th className="p-3">Email</th>
+                <th className="p-3">HIS ID</th>
                 <th className="p-3">LINE</th>
                 <th className="p-3">操作</th>
               </tr>
@@ -102,11 +105,12 @@ export default function ClinicPatientsPage() {
               {patients.map((p) => (
                 <tr key={p.id} className="border-t">
                   <td className="p-3">{p.id}</td>
+                  <td className="p-3 font-mono text-xs">{p.chart_no ?? "—"}</td>
                   <td className="p-3 font-medium">{p.name}</td>
                   <td className="p-3">{p.sex ?? "—"}</td>
                   <td className="p-3">{p.birth_date}</td>
                   <td className="p-3">{p.phone ?? "—"}</td>
-                  <td className="p-3">{p.email ?? "—"}</td>
+                  <td className="p-3 font-mono text-xs">{p.his_id ?? "—"}</td>
                   <td className="p-3">
                     {p.auth_user_id ? (
                       <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">已綁</span>
@@ -132,7 +136,7 @@ export default function ClinicPatientsPage() {
               ))}
               {patients.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="p-6 text-center text-gray-400">
+                  <td colSpan={9} className="p-6 text-center text-gray-400">
                     {query ? "找不到符合條件的病患" : "尚無病患，點「新增病患」建立第一筆"}
                   </td>
                 </tr>

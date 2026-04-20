@@ -15,6 +15,8 @@ type Patient = {
   email: string | null;
   national_id: string | null;
   address: string | null;
+  chart_no: string | null;
+  his_id: string | null;
 };
 
 export default function PatientEditPage() {
@@ -61,6 +63,8 @@ export default function PatientEditPage() {
         phone: p.phone,
         address: p.address,
         email: p.email,
+        chart_no: p.chart_no,
+        his_id: p.his_id,
       };
       await fetchAPI(`/patients/${id}`, {
         method: "PATCH",
@@ -165,6 +169,24 @@ export default function PatientEditPage() {
             onChange={(e) => update("email", e.target.value)}
             maxLength={100}
             className="w-full border rounded px-3 py-2 text-sm"
+          />
+        </Field>
+
+        <Field label="病歷號（同診所不可重複；InBody OCR 自動比對用）">
+          <input
+            value={p.chart_no ?? ""}
+            onChange={(e) => update("chart_no", e.target.value || null)}
+            maxLength={20}
+            className="w-full border rounded px-3 py-2 text-sm font-mono"
+          />
+        </Field>
+
+        <Field label="HIS ID（健保 / 醫院系統外部主鍵）">
+          <input
+            value={p.his_id ?? ""}
+            onChange={(e) => update("his_id", e.target.value || null)}
+            maxLength={20}
+            className="w-full border rounded px-3 py-2 text-sm font-mono"
           />
         </Field>
 

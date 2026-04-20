@@ -196,6 +196,11 @@ export default function NewPatientPage() {
           />
         </Field>
 
+        <div className="text-xs text-gray-500 bg-gray-50 rounded px-3 py-2">
+          病歷號將由系統自動產生（P000001 遞增，同診所不重複）。
+          如需對接舊系統編號，可於建立後在「編輯」頁修改。
+        </div>
+
         {error && <div className="bg-red-50 text-red-700 p-3 rounded text-sm">{error}</div>}
 
         <div className="flex gap-2 pt-2 border-t">

@@ -18,7 +18,12 @@ class Patient(AuditMixin, Base):
     auth_user_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True)
     # 多租戶 hard isolation：對應 auth_db.tenants.id；0=system
     tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    # his_id：將來對接健保 / 醫院 HIS 的外部主鍵；可留空。預設不開放 UI 編輯，
+    # 直到 HIS 對接流程確定；admin 可填。
     his_id: Mapped[str | None] = mapped_column(String(20))
+    # chart_no：現有診所系統的病歷號；同 tenant 內唯一（partial index 見 0006）。
+    # InBody 自動攝取會以此欄位精準對應病患，比姓名+生日可靠。
+    chart_no: Mapped[str | None] = mapped_column(String(20))
     name: Mapped[str] = mapped_column(String(20), nullable=False)
     sex: Mapped[str | None] = mapped_column(String(1))
     birth_date: Mapped[date] = mapped_column(Date, nullable=False)

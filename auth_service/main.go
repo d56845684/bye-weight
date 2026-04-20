@@ -55,6 +55,9 @@ func main() {
 	huma.Post(api, "/auth/password-login", h.HumaPasswordLogin)
 	huma.Post(api, "/auth/google", h.HumaGoogleLogin)
 
+	// Internal service-to-service endpoints（shared secret 保護；不走 user JWT）
+	huma.Get(api, "/auth/internal/users/by-line-uuid", h.HumaResolveSenderByLineUUID)
+
 	// 管理後台 users API — 全 huma（batch 3）
 	huma.Get(api, "/auth/admin/users", h.HumaListUsers)
 	huma.Post(api, "/auth/admin/users", h.HumaCreateUser)

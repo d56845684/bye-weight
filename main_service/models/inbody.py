@@ -38,6 +38,7 @@ class InbodyPending(AuditMixin, Base):
     image_url: Mapped[str | None] = mapped_column(Text)
     ocr_name: Mapped[str | None] = mapped_column(String(20))
     ocr_birth_date: Mapped[date | None] = mapped_column(Date)
+    ocr_chart_no: Mapped[str | None] = mapped_column(String(20))
     ocr_data: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

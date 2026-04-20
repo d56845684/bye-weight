@@ -7,15 +7,18 @@ import (
 )
 
 type Config struct {
-	AuthDatabaseURL    string
-	RedisURL           string
-	JWTSecret          string
-	AccessTokenExpire  time.Duration
-	RefreshTokenExpire time.Duration
-	LineChannelSecret  string
-	GoogleClientID     string
-	GoogleClientSecret string
-	Env                string
+	AuthDatabaseURL      string
+	RedisURL             string
+	JWTSecret            string
+	AccessTokenExpire    time.Duration
+	RefreshTokenExpire   time.Duration
+	LineChannelSecret    string
+	GoogleClientID       string
+	GoogleClientSecret   string
+	Env                  string
+	// Shared secret for service-to-service calls hitting /auth/internal/*
+	// （LINE webhook 之類 no-user-JWT 的情境）。空字串 → internal endpoints fail-close。
+	InternalServiceToken string
 }
 
 func Load() *Config {
@@ -31,7 +34,8 @@ func Load() *Config {
 		LineChannelSecret:  getEnv("LINE_CHANNEL_SECRET", ""),
 		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
-		Env:                getEnv("ENV", "development"),
+		Env:                  getEnv("ENV", "development"),
+		InternalServiceToken: getEnv("INTERNAL_SERVICE_TOKEN", ""),
 	}
 }
 

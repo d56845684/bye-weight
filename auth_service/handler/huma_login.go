@@ -166,6 +166,23 @@ func (h *Handler) HumaLineBind(ctx context.Context, in *LineBindInput) (*LineBin
 
 	userIDStr, err := h.rdb.Get(ctx, "bind:"+in.Body.BindingToken).Result()
 	if errors.Is(err, redis.Nil) {
+		// Token 已被 consume。若 caller 的 LINE UUID 就是之前被這顆 token 綁好的
+		// active user，當作「同一人重入」處理（常見於首次 line-bind 成功但
+		// /patients/register 前斷線，用戶回來再點 invite link）→ 直接發新 session
+		// 接續流程，不回 410 讓前端要多做 fallback。這裡依賴 users.line_uuid 唯一，
+		// 所以不會被別的 LINE UUID 重用掉這個 token 的效果。
+		if user, lookupErr := h.findUserByLineUUID(ctx, profile.UserID); lookupErr == nil && user != nil {
+			access, refresh, issueErr := h.issueSessionTokens(user)
+			if issueErr != nil {
+				return nil, huma.Error500InternalServerError("token issue failed")
+			}
+			_ = logLoginEvent(ctx, h.engine.DB(), user.ID,
+				pickClientIP(in.XForwardedFor, in.XRealIP, ""), in.UserAgent, "line_bind_resume")
+			out := &LineBindOutput{SetCookie: h.sessionCookies(access, refresh)}
+			out.Body.UserID = user.ID
+			out.Body.Role = user.RoleName
+			return out, nil
+		}
 		return nil, huma.Error410Gone("binding token expired or invalid")
 	}
 	if err != nil {
