@@ -51,6 +51,7 @@ func main() {
 	// 登入 / 綁定 / refresh
 	huma.Post(api, "/auth/line-token", h.HumaLineLogin)
 	huma.Post(api, "/auth/line-bind", h.HumaLineBind)
+	huma.Post(api, "/auth/line-friendship-check", h.HumaLineFriendshipCheck)
 	huma.Post(api, "/auth/refresh", h.HumaRefresh)
 	huma.Post(api, "/auth/password-login", h.HumaPasswordLogin)
 	huma.Post(api, "/auth/google", h.HumaGoogleLogin)

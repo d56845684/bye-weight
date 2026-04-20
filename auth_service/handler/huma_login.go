@@ -223,6 +223,77 @@ func (h *Handler) HumaLineBind(ctx context.Context, in *LineBindInput) (*LineBin
 	return out, nil
 }
 
+// ===== LineFriendshipCheck：POST /auth/line-friendship-check =====
+//
+// 為什麼不用前端 liff.getFriendship()：
+//   getFriendship() 只看 LIFF 所屬 LINE Login channel 連結的 OA；如果 LIFF 的
+//   Login channel 關聯的是另一個 placeholder OA（user 一登 LINE 就是朋友），
+//   會拿到 friendFlag=true，但實際要接訊息的 Messaging OA 用戶還沒加 →
+//   綁定前偵測不到「尚未加好友」，變孤兒帳號。
+//
+// 改打 Messaging API /v2/bot/profile/{uid}：
+//   - 200 → user 是 follower = 已加好友
+//   - 404 → user 尚未 follow
+//   - 其他 HTTP status → 視為無法判斷
+//
+// 用 LINE_CHANNEL_ACCESS_TOKEN 呼叫。token 空字串時回 is_friend=null + reason，
+// 前端可 degrade 為保守（當作未加好友）而不 crash。
+
+type LineFriendshipCheckInput struct {
+	Body struct {
+		AccessToken string `json:"access_token" doc:"LINE access token from LIFF"`
+	}
+}
+
+type LineFriendshipCheckOutput struct {
+	Body struct {
+		IsFriend *bool  `json:"is_friend" doc:"true=已加好友；false=未加；null=無法判斷（未設 token 或查詢失敗）"`
+		Reason   string `json:"reason,omitempty"`
+	}
+}
+
+func (h *Handler) HumaLineFriendshipCheck(ctx context.Context, in *LineFriendshipCheckInput) (*LineFriendshipCheckOutput, error) {
+	if in.Body.AccessToken == "" {
+		return nil, huma.Error400BadRequest("access_token required")
+	}
+	profile, err := verifyLineToken(in.Body.AccessToken)
+	if err != nil {
+		return nil, huma.Error401Unauthorized("invalid LINE token")
+	}
+
+	out := &LineFriendshipCheckOutput{}
+	if h.cfg.LineChannelAccessToken == "" {
+		out.Body.IsFriend = nil
+		out.Body.Reason = "not_configured"
+		return out, nil
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, "GET",
+		"https://api.line.me/v2/bot/profile/"+profile.UserID, nil)
+	req.Header.Set("Authorization", "Bearer "+h.cfg.LineChannelAccessToken)
+	resp, callErr := http.DefaultClient.Do(req)
+	if callErr != nil {
+		out.Body.IsFriend = nil
+		out.Body.Reason = "call_failed"
+		return out, nil
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		t := true
+		out.Body.IsFriend = &t
+	case http.StatusNotFound:
+		f := false
+		out.Body.IsFriend = &f
+	default:
+		// 401=access token 無效、403=channel 權限不夠 等 — 視為無法判斷
+		out.Body.IsFriend = nil
+		out.Body.Reason = "line_api_" + strconv.Itoa(resp.StatusCode)
+	}
+	return out, nil
+}
+
 // ===== Refresh：POST /auth/refresh =====
 
 type RefreshInput struct {

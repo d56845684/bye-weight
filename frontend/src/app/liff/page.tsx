@@ -44,13 +44,25 @@ function safeNext(raw: string | null): string | null {
 }
 
 // 綁定流程一定要先加 OA 好友，之後 staff 端才能推訊息、發 InBody 提醒。
-// 只在綁定流程卡：既有 user 一般登入不檢查（不打擾）。
-// 若 LIFF channel 沒綁 OA，getFriendship() 會 reject — 當作「無法驗證」跳過，
-// 以免 dev 環境直接被擋死。
-async function checkFriendship(): Promise<"friend" | "not-friend" | "unknown"> {
+// 為什麼不用 liff.getFriendship()：它查的是 LIFF 所屬 LINE Login channel
+// 連結的 OA，不一定是我們真正要接訊息的 Messaging OA — 很可能拿到假陽性
+// friendFlag=true，讓未加好友的用戶也過關。改打後端 /auth/line-friendship-check，
+// 後端用 Messaging API channel access token 查 /v2/bot/profile/{uid}，
+// 200=朋友、404=非朋友，這個是唯一可靠答案。
+//
+// is_friend=null：後端沒設 LINE_CHANNEL_ACCESS_TOKEN 或 call 失敗 → 當 "unknown"。
+async function checkFriendship(accessToken: string): Promise<"friend" | "not-friend" | "unknown"> {
   try {
-    const { friendFlag } = await liff.getFriendship();
-    return friendFlag ? "friend" : "not-friend";
+    const res = await fetch("/auth/v1/line-friendship-check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_token: accessToken }),
+    });
+    if (!res.ok) return "unknown";
+    const data: { is_friend: boolean | null } = await res.json();
+    if (data.is_friend === true) return "friend";
+    if (data.is_friend === false) return "not-friend";
+    return "unknown";
   } catch {
     return "unknown";
   }
@@ -118,8 +130,10 @@ function LiffInner() {
 
   // 使用者回到頁面點「我已加入官方帳號」時，重查一次 friendship。
   const retryAfterAddFriend = useCallback(async () => {
+    const accessToken = accessTokenRef.current;
+    if (!accessToken) return;
     setStatus("重新確認好友狀態…");
-    const state = await checkFriendship();
+    const state = await checkFriendship(accessToken);
     if (state === "friend" || state === "unknown") {
       setNeedsFriend(false);
       await completeBind();
@@ -138,8 +152,10 @@ function LiffInner() {
     const tryProceed = async () => {
       if (running) return;
       if (document.visibilityState !== "visible") return;
+      const accessToken = accessTokenRef.current;
+      if (!accessToken) return;
       running = true;
-      const state = await checkFriendship();
+      const state = await checkFriendship(accessToken);
       running = false;
       if (state === "friend") {
         setNeedsFriend(false);
@@ -220,13 +236,13 @@ function LiffInner() {
 
         // 綁定流程：先確認已加入 OA 好友，才能真正 bind
         setStatus("檢查官方帳號狀態…");
-        const state = await checkFriendship();
+        const state = await checkFriendship(accessToken);
         if (state === "not-friend") {
           setNeedsFriend(true);
           setStatus("");
           return;
         }
-        // friend or unknown（LIFF channel 未綁 OA 的 dev 環境）→ 直接 bind
+        // friend or unknown（後端沒設 token 的 dev 環境）→ 直接 bind
         await completeBind();
       } catch (e: any) {
         setStatus(`登入失敗：${e.message}`);

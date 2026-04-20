@@ -13,6 +13,9 @@ type Config struct {
 	AccessTokenExpire    time.Duration
 	RefreshTokenExpire   time.Duration
 	LineChannelSecret    string
+	// Messaging API channel access token — 打 /v2/bot/profile/{uid} 驗 follower 狀態用。
+	// 空字串 → friendship-check endpoint 回 is_friend=null（前端 degrade 到保守行為）。
+	LineChannelAccessToken string
 	GoogleClientID       string
 	GoogleClientSecret   string
 	Env                  string
@@ -32,6 +35,7 @@ func Load() *Config {
 		AccessTokenExpire:  time.Duration(accessExp) * time.Second,
 		RefreshTokenExpire: time.Duration(refreshExp) * time.Second,
 		LineChannelSecret:  getEnv("LINE_CHANNEL_SECRET", ""),
+		LineChannelAccessToken: getEnv("LINE_CHANNEL_ACCESS_TOKEN", ""),
 		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
 		Env:                  getEnv("ENV", "development"),
