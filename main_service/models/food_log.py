@@ -6,9 +6,10 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models.patient import Base
+from models._mixin import AuditMixin
 
 
-class FoodLog(Base):
+class FoodLog(AuditMixin, Base):
     __tablename__ = "food_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

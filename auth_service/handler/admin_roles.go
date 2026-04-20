@@ -225,6 +225,10 @@ func (h *Handler) SetRolePolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if err := applyAuditContext(r.Context(), tx, r); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	if _, err := tx.Exec(r.Context(),
 		`DELETE FROM role_policies WHERE role_id = $1`, id); err != nil {

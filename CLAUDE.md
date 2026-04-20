@@ -56,3 +56,125 @@
 - **多租戶** Hard isolation：`users.tenant_id` + 所有業務表 `tenant_id`，system tenant=0 保留給 super_admin。Policy 的 resource pattern 透過 `${auth:tenant_id}` 自動限縮。
 - **Docker Compose** `docker-compose.yml` 走 Cloud SQL Proxy；`docker-compose.dev.yml` 預設只起 postgres + redis，加 `--profile full` 才全容器啟動三個服務 + nginx。
 - **快取命名** auth 用 `auth:blacklist:*`、`auth:engine:cache`（policy+mapping 快取）；main 用 `cache:{resource}:*`，由寫入端主動 invalidate。
+
+---
+
+## 資料庫稽核欄位規範
+
+### 必備欄位
+
+所有**會被 UPDATE / DELETE 的實體表**（auth_db 與 app_db 皆適用）一律具備：
+
+| 欄位 | 型別 | 誰填 |
+|---|---|---|
+| `created_at` | `TIMESTAMP` | DB 預設 `NOW()` 或 trigger |
+| `created_by` | `INT`（對應 `auth_db.users.id`，無 FK） | Trigger 自動填（從 session 變數） |
+| `updated_at` | `TIMESTAMP` | Trigger 自動填 `NOW()` |
+| `updated_by` | `INT` | Trigger 自動填（從 session 變數） |
+| `deleted_at` | `TIMESTAMP` | **應用層**明確 UPDATE 才填（soft delete）|
+| `deleted_by` | `INT` | 同上 |
+
+### 不加稽核的表
+
+- **junction 表**（`role_policies` / `tenant_services` / `tenant_roles` 等）：只有 INSERT / DELETE，沒有 UPDATE 語義。要稽核靠父 entity 記錄。
+- **append-only log 表**（`login_logs` / `notification_logs`）：本身就是事件流，加稽核是冗餘。
+
+### Trigger 自動化
+
+兩個 DB 都有 `audit_autofill()` 函式 + 每張表一個 `BEFORE INSERT OR UPDATE` trigger：
+
+```sql
+CREATE OR REPLACE FUNCTION audit_autofill() RETURNS TRIGGER AS $$
+DECLARE
+    uid INT;
+BEGIN
+    BEGIN
+        uid := NULLIF(current_setting('app.current_user', true), '')::INT;
+    EXCEPTION WHEN others THEN uid := NULL;
+    END;
+
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.created_by IS NULL THEN NEW.created_by := uid; END IF;
+    ELSIF TG_OP = 'UPDATE' THEN
+        NEW.updated_at := NOW();
+        NEW.updated_by := uid;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+### 應用層必做：SET LOCAL app.current_user
+
+每個 request handler 在 transaction 裡一定要 `SET LOCAL app.current_user = <user_id>`，trigger 才讀得到。
+
+**main_service（FastAPI + SQLAlchemy）**
+`database.py` 的 `after_begin` event listener 自動從 `X-User-Id` header 讀並 SET LOCAL：
+
+```python
+@event.listens_for(Session, "after_begin")
+def _apply_session_context(session, transaction, connection):
+    connection.execute(text("SET LOCAL ROLE app_user"))
+    if tid := _tenant_cv.get():
+        connection.execute(text("SELECT set_config('app.current_tenant', :t, true)"), {"t": str(tid)})
+    if uid := _user_cv.get():
+        connection.execute(text("SELECT set_config('app.current_user', :u, true)"), {"u": str(uid)})
+```
+
+`get_db` dependency 讀 `X-User-Id` + `X-Tenant-Id` 寫進 contextvar。
+
+**auth_service（Go）**
+用 `handler/audit.go` 的 helper：
+
+```go
+// 單一 statement 用 withAudit
+err := withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+    _, err := tx.Exec(r.Context(),
+        `UPDATE users SET display_name = $1 WHERE id = $2`, name, id)
+    return err
+})
+
+// 多步驟 tx 用 applyAuditContext
+tx, _ := h.engine.DB().Begin(ctx)
+defer tx.Rollback(ctx)
+applyAuditContext(ctx, tx, r)   // 這行之後的 Exec 都會被 trigger 認到
+// ... 多段 INSERT / UPDATE ...
+tx.Commit(ctx)
+```
+
+Nginx `/auth/v1/admin/` location 會把 `X-User-Id` proxy 給 auth_service（從 `/auth/verify` 的 response header 拿）。非 admin 路由（例如登入本身）沒 X-User-Id → `updated_by` 為 NULL，可接受。
+
+### Soft delete 慣例
+
+**不**把現有 `DELETE` 語句改掉（太侵入性）。想對某張表支援 soft delete 時：
+
+1. 把 `DELETE FROM x WHERE id = ?` 改成
+   ```sql
+   UPDATE x SET deleted_at = NOW(), deleted_by = $current_user WHERE id = ? AND deleted_at IS NULL
+   ```
+2. 所有 SELECT 加 `WHERE deleted_at IS NULL`（建議用 PostgreSQL VIEW 或 RLS policy 統一）
+3. unique constraint 要考慮 deleted_at（例如 `UNIQUE (name, deleted_at)`），避免刪完不能重用名稱
+
+### 新增服務 / 新表的 onboarding checklist
+
+1. 新表 `CREATE TABLE x (... created_at TIMESTAMP DEFAULT NOW(), ...)` — 只需 `created_at`，`created_by / updated_* / deleted_*` 由 migration 後面統一 ALTER
+2. migration 最後：
+   ```sql
+   ALTER TABLE x
+       ADD COLUMN IF NOT EXISTS created_by INT,
+       ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP,
+       ADD COLUMN IF NOT EXISTS updated_by INT,
+       ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP,
+       ADD COLUMN IF NOT EXISTS deleted_by INT;
+   CREATE TRIGGER trg_x_audit BEFORE INSERT OR UPDATE ON x
+       FOR EACH ROW EXECUTE FUNCTION audit_autofill();
+   ```
+3. 服務程式碼確保每個 request 都 SET LOCAL app.current_user（main_service 已在 `get_db` 自動；auth_service 用 `withAudit` / `applyAuditContext`；新服務抄 main_service pattern）
+4. junction / log 表不套用
+
+### 參考
+
+- `auth_service/migrations/000007_audit_columns.up.sql`
+- `main_service/alembic/versions/0004_audit_columns.py`
+- `auth_service/handler/audit.go`
+- `main_service/database.py`

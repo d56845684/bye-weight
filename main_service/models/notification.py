@@ -4,9 +4,10 @@ from sqlalchemy import Boolean, DateTime, Integer, String, Text, Time
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models.patient import Base
+from models._mixin import AuditMixin
 
 
-class NotificationRule(Base):
+class NotificationRule(AuditMixin, Base):
     __tablename__ = "notification_rules"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -20,7 +21,7 @@ class NotificationRule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
-class NotificationLog(Base):
+class NotificationLog(AuditMixin, Base):
     __tablename__ = "notification_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

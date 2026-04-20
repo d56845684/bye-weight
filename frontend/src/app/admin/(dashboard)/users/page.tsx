@@ -30,8 +30,10 @@ type BindingResult = {
 };
 
 type RoleObj = { id: number; name: string };
+type Me = { user_id: number; role: string; tenant_id: number };
 
 export default function AdminUsersPage() {
+  const [me, setMe] = useState<Me | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<RoleObj[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -50,15 +52,32 @@ export default function AdminUsersPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [usersRes, rolesRes, tenantsRes] = await Promise.all([
+      // 先拿 /me 決定要呼叫哪些 endpoint
+      const meRes = await fetch("/auth/v1/me", { credentials: "include" });
+      if (!meRes.ok) throw new Error("auth required");
+      const meData: Me = await meRes.json();
+      setMe(meData);
+      const isSuper = meData.role === "super_admin";
+
+      // super_admin 才能列所有 tenants；clinic-admin 只能操作自己 tenant
+      const reqs: Promise<Response>[] = [
         fetch("/auth/v1/admin/users", { credentials: "include" }),
         fetch("/auth/v1/admin/roles", { credentials: "include" }),
-        fetch("/auth/v1/admin/tenants", { credentials: "include" }),
-      ]);
-      if (!usersRes.ok || !rolesRes.ok || !tenantsRes.ok) throw new Error(`HTTP ${usersRes.status}`);
+      ];
+      if (isSuper) {
+        reqs.push(fetch("/auth/v1/admin/tenants", { credentials: "include" }));
+      }
+      const [usersRes, rolesRes, tenantsRes] = await Promise.all(reqs);
+      if (!usersRes.ok || !rolesRes.ok || (tenantsRes && !tenantsRes.ok)) {
+        throw new Error(`HTTP ${usersRes.status}`);
+      }
       setUsers((await usersRes.json()).users ?? []);
       setRoles(((await rolesRes.json()).roles ?? []).map((r: any) => ({ id: r.id, name: r.name })));
-      setTenants((await tenantsRes.json()).tenants ?? []);
+      setTenants(tenantsRes ? (await tenantsRes.json()).tenants ?? [] : []);
+      // clinic-admin：預設表單的 tenant_id 鎖在自己的 tenant
+      if (!isSuper) {
+        setForm((f) => ({ ...f, tenant_id: meData.tenant_id }));
+      }
       setError(null);
     } catch (e: any) {
       setError(e.message);
@@ -140,10 +159,64 @@ export default function AdminUsersPage() {
     setBinding(await res.json());
   };
 
+  const unbind = async (u: User) => {
+    const label = u.display_name || `#${u.id}`;
+    if (!confirm(`解除 ${label} 的 LINE 綁定後，其手機上的 session 會立即失效且帳號被停用。\n要重新啟用需重發綁定連結。確定？`))
+      return;
+    const res = await fetch(`/auth/v1/admin/users/${u.id}/unbind`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      alert(`解除綁定失敗：${await res.text()}`);
+      return;
+    }
+    load();
+  };
+
+  const setPassword = async (u: User) => {
+    const label = u.display_name || `#${u.id}`;
+    const email = prompt(`設定「${label}」的登入 email：`, u.google_email ?? "");
+    if (!email) return;
+    const password = prompt("初始密碼（至少 8 碼）：");
+    if (!password || password.length < 8) {
+      if (password !== null) alert("密碼至少 8 碼");
+      return;
+    }
+    const res = await fetch(`/auth/v1/admin/users/${u.id}/password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ email, password }),
+    });
+    if (!res.ok) {
+      alert(`設定失敗：${await res.text()}`);
+      return;
+    }
+    alert(`已設定 ${label} 的 email / 密碼，現有 session 全部失效`);
+    load();
+  };
+
+  const softDelete = async (u: User) => {
+    const label = u.display_name || `#${u.id}`;
+    if (!confirm(`軟刪除 ${label}？\n\n動作：停用帳號、清掉 LINE 綁定、現有 session 全部失效。\n記錄保留於 DB（deleted_at / deleted_by），未來可恢復。\n\n確定？`))
+      return;
+    const res = await fetch(`/auth/v1/admin/users/${u.id}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      alert(`刪除失敗：${await res.text()}`);
+      return;
+    }
+    load();
+  };
+
   const absoluteURL = (u: string) =>
     u.startsWith("http") ? u : `${window.location.origin}${u}`;
 
   const realTenants = tenants.filter((t) => t.id !== 0);
+  const isSuper = me?.role === "super_admin";
 
   return (
     <div>
@@ -174,7 +247,7 @@ export default function AdminUsersPage() {
                 <th className="p-3">名稱</th>
                 <th className="p-3">綁定</th>
                 <th className="p-3">角色</th>
-                <th className="p-3">Tenant</th>
+                {isSuper && <th className="p-3">Tenant</th>}
                 <th className="p-3">狀態</th>
                 <th className="p-3">操作</th>
               </tr>
@@ -238,19 +311,21 @@ export default function AdminUsersPage() {
                       ))}
                     </select>
                   </td>
-                  <td className="p-3">
-                    <select
-                      value={u.tenant_id}
-                      onChange={(e) => updateUser(u.id, { tenant_id: Number(e.target.value) } as any)}
-                      className="border rounded px-2 py-1 text-sm"
-                    >
-                      {tenants.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.id === 0 ? "system" : t.slug}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
+                  {isSuper && (
+                    <td className="p-3">
+                      <select
+                        value={u.tenant_id}
+                        onChange={(e) => updateUser(u.id, { tenant_id: Number(e.target.value) } as any)}
+                        className="border rounded px-2 py-1 text-sm"
+                      >
+                        {tenants.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.id === 0 ? "system" : t.slug}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                  )}
                   <td className="p-3">
                     <button
                       onClick={() => updateUser(u.id, { active: !u.active } as any)}
@@ -261,7 +336,7 @@ export default function AdminUsersPage() {
                       {u.active ? "啟用" : "停用"}
                     </button>
                   </td>
-                  <td className="p-3">
+                  <td className="p-3 space-x-3">
                     {u.binding_status === "pending" && (
                       <button
                         onClick={() => regenerate(u.id)}
@@ -270,6 +345,30 @@ export default function AdminUsersPage() {
                         產生綁定連結
                       </button>
                     )}
+                    {u.binding_status === "bound" && (
+                      <button
+                        onClick={() => unbind(u)}
+                        className="text-xs text-red-700 hover:underline"
+                      >
+                        解除綁定
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setPassword(u)}
+                      disabled={u.role === "super_admin"}
+                      title={u.role === "super_admin" ? "super_admin 請直接改 DB" : "設定 email + 密碼"}
+                      className="text-xs text-gray-500 hover:text-red-700 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      設密碼
+                    </button>
+                    <button
+                      onClick={() => softDelete(u)}
+                      disabled={u.role === "super_admin"}
+                      title={u.role === "super_admin" ? "super_admin 不可刪除" : "軟刪除"}
+                      className="text-xs text-gray-500 hover:text-red-700 hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      刪除
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -323,25 +422,31 @@ export default function AdminUsersPage() {
                 </p>
               )}
             </div>
-            <div>
-              <label className="block text-sm mb-1">Tenant</label>
-              <select
-                value={form.tenant_id}
-                onChange={(e) => setForm({ ...form, tenant_id: Number(e.target.value) })}
-                className="w-full border rounded px-3 py-2 text-sm"
-                required
-              >
-                {form.role === "super_admin" && <option value={0}>system (0)</option>}
-                {realTenants.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.slug} · {t.name}
-                  </option>
-                ))}
-              </select>
-              {realTenants.length === 0 && form.role !== "super_admin" && (
-                <p className="text-xs text-red-600 mt-1">尚無 tenant，請先到「租戶」建立。</p>
-              )}
-            </div>
+            {isSuper ? (
+              <div>
+                <label className="block text-sm mb-1">Tenant</label>
+                <select
+                  value={form.tenant_id}
+                  onChange={(e) => setForm({ ...form, tenant_id: Number(e.target.value) })}
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  required
+                >
+                  {form.role === "super_admin" && <option value={0}>system (0)</option>}
+                  {realTenants.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.slug} · {t.name}
+                    </option>
+                  ))}
+                </select>
+                {realTenants.length === 0 && form.role !== "super_admin" && (
+                  <p className="text-xs text-red-600 mt-1">尚無 tenant，請先到「租戶」建立。</p>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500">
+                將建立於你自己的 tenant (#{me?.tenant_id})
+              </div>
+            )}
             <div className="flex gap-2 pt-2">
               <button
                 type="submit"

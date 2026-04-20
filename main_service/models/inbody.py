@@ -6,9 +6,10 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models.patient import Base
+from models._mixin import AuditMixin
 
 
-class InbodyRecord(Base):
+class InbodyRecord(AuditMixin, Base):
     __tablename__ = "inbody_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -28,7 +29,7 @@ class InbodyRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
-class InbodyPending(Base):
+class InbodyPending(AuditMixin, Base):
     __tablename__ = "inbody_pending"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

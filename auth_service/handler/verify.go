@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -8,34 +9,81 @@ import (
 	"auth_service/token"
 )
 
-// Verify 對應 Nginx auth_request。流程：
-// 1. 解 access_token cookie
-// 2. 查 blacklist（fail-closed）
-// 3. 從 action_mappings 解析原始請求 → (action, resource template, path 變數)
-// 4. 展開 resource template 取得具體 ARN
-// 5. 依 subject.role 對應的 policies 做 IAM 評估
-// 6. 通過後注入 X-User-Id / X-User-Role / X-Tenant-Id header
-func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("access_token")
-	if err != nil {
-		http.Error(w, "no token", http.StatusUnauthorized)
-		return
-	}
-
-	claims, err := token.Parse(cookie.Value, h.cfg.JWTSecret)
-	if err != nil {
-		http.Error(w, "invalid token", http.StatusUnauthorized)
-		return
-	}
-
+// verifySession 接收已解析的 JWT claims，跑後續所有狀態檢查：
+// blacklist → user.active → tenant.active → user_revoke。
+// cookie 解析由 caller 負責（verify/me 用 access_token、refresh 用 refresh_token），
+// 這個 helper 保證三條驗證路徑的擋線行為一致，改一處就生效。
+func (h *Handler) verifySession(r *http.Request, claims *token.Claims) (int, error) {
 	// fail-closed：Redis 故障時拒絕
 	revoked, err := token.IsRevoked(r.Context(), h.rdb, claims.ID)
 	if err != nil {
-		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
-		return
+		return http.StatusServiceUnavailable, errors.New("service unavailable")
 	}
 	if revoked {
-		http.Error(w, "token revoked", http.StatusUnauthorized)
+		return http.StatusUnauthorized, errors.New("token revoked")
+	}
+
+	// 確認使用者仍啟用（後台將 active=false 後應立即生效，不等 JWT 過期）
+	var userActive bool
+	if err := h.engine.DB().QueryRow(r.Context(),
+		`SELECT active FROM users WHERE id = $1`, claims.UserID).Scan(&userActive); err != nil {
+		return http.StatusUnauthorized, errors.New("user not found")
+	}
+	if !userActive {
+		return http.StatusUnauthorized, errors.New("account disabled")
+	}
+
+	// Tenant 停用 → 該租戶底下所有現役 session 立即擋下。
+	// 系統 tenant（id=0，super_admin 專用）略過，避免誤操作鎖死後台。
+	if claims.TenantID != 0 {
+		var tenantActive bool
+		if err := h.engine.DB().QueryRow(r.Context(),
+			`SELECT active FROM tenants WHERE id = $1`, claims.TenantID).Scan(&tenantActive); err != nil {
+			return http.StatusUnauthorized, errors.New("tenant not found")
+		}
+		if !tenantActive {
+			return http.StatusUnauthorized, errors.New("tenant disabled")
+		}
+	}
+
+	// 使用者層級吊銷：admin 拔 LINE 綁定 / 改角色 / 切 tenant 時會寫 Redis。
+	// JWT 簽發時間早於吊銷時間就視為失效，不必等 JWT TTL 到期。
+	if claims.IssuedAt != nil {
+		userRevoked, err := token.IsUserRevoked(r.Context(), h.rdb, claims.UserID, claims.IssuedAt.Time)
+		if err != nil {
+			return http.StatusServiceUnavailable, errors.New("service unavailable")
+		}
+		if userRevoked {
+			return http.StatusUnauthorized, errors.New("session revoked by admin")
+		}
+	}
+
+	return http.StatusOK, nil
+}
+
+// verifyIdentity 是 Verify / VerifyPage / Me 共用的入口：拿 access_token cookie、
+// 解 JWT、跑 verifySession。不做 action / resource / policy 檢查。
+func (h *Handler) verifyIdentity(r *http.Request) (*token.Claims, int, error) {
+	cookie, err := r.Cookie("access_token")
+	if err != nil {
+		return nil, http.StatusUnauthorized, errors.New("no token")
+	}
+	claims, err := token.Parse(cookie.Value, h.cfg.JWTSecret)
+	if err != nil {
+		return nil, http.StatusUnauthorized, errors.New("invalid token")
+	}
+	if code, err := h.verifySession(r, claims); err != nil {
+		return nil, code, err
+	}
+	return claims, http.StatusOK, nil
+}
+
+// Verify 對應 Nginx 的 /api/v1 auth_request：除了身份檢查還會解析 action
+// mapping、評估 policy，通過才回 200。失敗會以 401 / 403 / 5xx 區別原因。
+func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
+	claims, code, err := h.verifyIdentity(r)
+	if err != nil {
+		http.Error(w, err.Error(), code)
 		return
 	}
 
@@ -69,6 +117,21 @@ func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 通過：注入上下文 header 給主服務
+	w.Header().Set("X-User-Id", strconv.Itoa(claims.UserID))
+	w.Header().Set("X-User-Role", claims.Role)
+	w.Header().Set("X-Tenant-Id", strconv.Itoa(claims.TenantID))
+	w.WriteHeader(http.StatusOK)
+}
+
+// VerifyPage 對應 Nginx 掛在前端頁面（/patient /staff /nutritionist）的 auth_request。
+// 只確認使用者登入狀態、帳號存在且未被停用 / 吊銷，不做 action / policy 判斷——
+// 真正的資源授權還是由 /api/v1/* 的 Verify 把關。
+func (h *Handler) VerifyPage(w http.ResponseWriter, r *http.Request) {
+	claims, code, err := h.verifyIdentity(r)
+	if err != nil {
+		http.Error(w, err.Error(), code)
+		return
+	}
 	w.Header().Set("X-User-Id", strconv.Itoa(claims.UserID))
 	w.Header().Set("X-User-Role", claims.Role)
 	w.Header().Set("X-Tenant-Id", strconv.Itoa(claims.TenantID))

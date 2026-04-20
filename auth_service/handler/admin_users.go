@@ -11,6 +11,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"golang.org/x/crypto/bcrypt"
+
+	"auth_service/token"
 )
 
 const bindTokenTTL = 7 * 24 * time.Hour
@@ -28,14 +32,23 @@ type adminUserRow struct {
 }
 
 // ListUsers：GET /auth/admin/users
+// super_admin 看所有 tenant；其他 admin 只能看自己 tenant。
+// 預設不含軟刪除的 user；需求需要查 deleted 時未來可加 ?include_deleted=1 參數。
 func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.engine.DB().Query(r.Context(), `
+	query := `
 		SELECT u.id, u.display_name, u.line_uuid, u.google_email,
 		       r.name, u.tenant_id, t.slug, u.active
 		FROM users u
 		JOIN roles r   ON u.role_id  = r.id
 		JOIN tenants t ON u.tenant_id = t.id
-		ORDER BY u.id`)
+		WHERE u.deleted_at IS NULL`
+	args := []any{}
+	if !isSuperAdmin(r) {
+		query += ` AND u.tenant_id = $1`
+		args = append(args, callerTenantID(r))
+	}
+	query += ` ORDER BY u.id`
+	rows, err := h.engine.DB().Query(r.Context(), query, args...)
 	if err != nil {
 		http.Error(w, "query failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -94,6 +107,15 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "patient"
 	}
+
+	// 非 super_admin（clinic-admin 等）只能在自己 tenant 建 user，忽略請求的 tenant_id
+	if !isSuperAdmin(r) {
+		req.TenantID = callerTenantID(r)
+		if req.Role == "super_admin" {
+			http.Error(w, "only super_admin can create super_admin users", http.StatusForbidden)
+			return
+		}
+	}
 	// tenant_id=0 只允許綁 super_admin；其他角色必須綁實體 tenant
 	if req.Role != "super_admin" && req.TenantID == 0 {
 		http.Error(w, "tenant_id is required for non-super_admin roles", http.StatusBadRequest)
@@ -132,11 +154,13 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var userID int
-	err := h.engine.DB().QueryRow(r.Context(), `
-		INSERT INTO users (display_name, role_id, tenant_id, active)
-		VALUES ($1, (SELECT id FROM roles WHERE name = $2), $3, true)
-		RETURNING id`,
-		req.DisplayName, req.Role, req.TenantID).Scan(&userID)
+	err := withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), `
+			INSERT INTO users (display_name, role_id, tenant_id, active)
+			VALUES ($1, (SELECT id FROM roles WHERE name = $2), $3, true)
+			RETURNING id`,
+			req.DisplayName, req.Role, req.TenantID).Scan(&userID)
+	})
 	if err != nil {
 		http.Error(w, "create failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -160,12 +184,32 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ensureTargetInTenant：非 super_admin 的 caller 要確認目標 user 跟自己同 tenant，
+// 否則回 404（故意跟「user 不存在」用同一個 status，不暴露存在性）。
+// 回傳 true 代表 handler 可以繼續；false 代表已經 writeError，caller 應 return。
+func (h *Handler) ensureTargetInTenant(w http.ResponseWriter, r *http.Request, targetUserID int) bool {
+	if isSuperAdmin(r) {
+		return true
+	}
+	var targetTenant int
+	err := h.engine.DB().QueryRow(r.Context(),
+		`SELECT tenant_id FROM users WHERE id = $1 AND deleted_at IS NULL`, targetUserID).Scan(&targetTenant)
+	if err != nil || targetTenant != callerTenantID(r) {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return false
+	}
+	return true
+}
+
 // RegenerateBindToken：POST /auth/admin/users/{id}/binding-token
 // 給已建立但未綁 LINE 的 user 重新發一張 token
 func (h *Handler) RegenerateBindToken(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if !h.ensureTargetInTenant(w, r, id) {
 		return
 	}
 
@@ -212,22 +256,24 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
+	if !h.ensureTargetInTenant(w, r, id) {
+		return
+	}
 	var req updateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
+	// 非 super_admin 不可把 user 搬到別的 tenant
+	if !isSuperAdmin(r) && req.TenantID != nil && *req.TenantID != callerTenantID(r) {
+		http.Error(w, "cannot change user's tenant", http.StatusForbidden)
+		return
+	}
 
 	db := h.engine.DB()
-	if req.DisplayName != nil {
-		if _, err := db.Exec(r.Context(),
-			`UPDATE users SET display_name = $1 WHERE id = $2`, *req.DisplayName, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
+
+	// 驗證（讀取不需進 tx）
 	if req.Role != "" {
-		// 取該 user 現在的 tenant 驗 role 是否可用
 		var tenantID int
 		if err := db.QueryRow(r.Context(),
 			`SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&tenantID); err != nil {
@@ -251,12 +297,6 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if _, err := db.Exec(r.Context(), `
-			UPDATE users SET role_id = (SELECT id FROM roles WHERE name = $1)
-			WHERE id = $2`, req.Role, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 	}
 	if req.TenantID != nil {
 		var ok bool
@@ -266,20 +306,277 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "tenant not found or inactive", http.StatusBadRequest)
 			return
 		}
-		if _, err := db.Exec(r.Context(),
-			`UPDATE users SET tenant_id = $1 WHERE id = $2`, *req.TenantID, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 	}
-	if req.Active != nil {
-		if _, err := db.Exec(r.Context(),
-			`UPDATE users SET active = $1 WHERE id = $2`, *req.Active, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+
+	// 全部 UPDATE 在單一 audited tx 中執行
+	err = withAudit(r, db, func(tx pgx.Tx) error {
+		if req.DisplayName != nil {
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE users SET display_name = $1 WHERE id = $2`, *req.DisplayName, id); err != nil {
+				return err
+			}
 		}
+		if req.Role != "" {
+			if _, err := tx.Exec(r.Context(), `
+				UPDATE users SET role_id = (SELECT id FROM roles WHERE name = $1)
+				WHERE id = $2`, req.Role, id); err != nil {
+				return err
+			}
+		}
+		if req.TenantID != nil {
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE users SET tenant_id = $1 WHERE id = $2`, *req.TenantID, id); err != nil {
+				return err
+			}
+		}
+		if req.Active != nil {
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE users SET active = $1 WHERE id = $2`, *req.Active, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+
+	// 如果動到會讓 JWT 失真的欄位（role / tenant / active），立刻吊銷既有 session
+	if req.Role != "" || req.TenantID != nil || req.Active != nil {
+		_ = token.RevokeUser(r.Context(), h.rdb, id, h.cfg.RefreshTokenExpire)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "id": id})
+}
+
+// UnbindUser：POST /auth/admin/users/{id}/unbind
+// 同步清 line_uuid 並將 active 設為 false。手機上現有 JWT cookie 下一個 request
+// 會被 verify.go 的 active 檢查擋下；要再登入必須由 admin 重發 binding-token。
+func (h *Handler) UnbindUser(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if !h.ensureTargetInTenant(w, r, id) {
+		return
+	}
+
+	// 先確認 user 存在；不存在時直接回 404 比起跑完 tx 再看影響筆數乾淨
+	var exists bool
+	if err := h.engine.DB().QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`, id).Scan(&exists); err != nil {
+		http.Error(w, "lookup failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+
+	err = withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(r.Context(),
+			`UPDATE users SET line_uuid = NULL, active = false WHERE id = $1`, id)
+		return execErr
+	})
+	if err != nil {
+		http.Error(w, "unbind failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 立刻吊銷該 user 現有所有 session（含 access_token / refresh_token）
+	// 即便 active 檢查、line_uuid 被誰改動，existing JWT 下一個 request 就 401。
+	_ = token.RevokeUser(r.Context(), h.rdb, id, h.cfg.RefreshTokenExpire)
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "unbound", "id": id})
+}
+
+// DeleteUser：DELETE /auth/admin/users/{id}
+// 軟刪除：set deleted_at/by、active=false、line_uuid=NULL，並 RevokeUser 讓舊
+// JWT 當下失效。super_admin 與自己不可刪。
+func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if actingUserID(r) == id {
+		http.Error(w, "cannot delete yourself", http.StatusBadRequest)
+		return
+	}
+	if !h.ensureTargetInTenant(w, r, id) {
+		return
+	}
+
+	// 讀一下現在狀態 + 角色
+	var roleName string
+	var alreadyDeleted bool
+	err = h.engine.DB().QueryRow(r.Context(), `
+		SELECT r.name, u.deleted_at IS NOT NULL
+		FROM users u JOIN roles r ON u.role_id = r.id
+		WHERE u.id = $1`, id).Scan(&roleName, &alreadyDeleted)
+	if err != nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if alreadyDeleted {
+		http.Error(w, "user already deleted", http.StatusConflict)
+		return
+	}
+	if roleName == "super_admin" {
+		http.Error(w, "super_admin user cannot be deleted", http.StatusLocked)
+		return
+	}
+
+	err = withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(r.Context(), `
+			UPDATE users
+			SET deleted_at = NOW(),
+			    deleted_by = NULLIF(current_setting('app.current_user', true), '')::INT,
+			    active     = false,
+			    line_uuid  = NULL
+			WHERE id = $1`, id)
+		return execErr
+	})
+	if err != nil {
+		http.Error(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_ = token.RevokeUser(r.Context(), h.rdb, id, h.cfg.RefreshTokenExpire)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "id": id})
+}
+
+type invitePatientRequest struct {
+	DisplayName string `json:"display_name"`
+}
+
+// InvitePatient：POST /auth/admin/users/invite
+// 專門給「clinic-admin」或「特定 staff（被綁 patient-inviter policy 的）」用：
+// 在自己 tenant 建一個 role=patient 的 user 並產生 7 天 binding token。
+// 跟 CreateUser 的差異：強制 role=patient、強制 tenant=caller，action 是
+// admin:user:invite（不是 admin:user:write），方便超管把邀請病患的權力下放。
+func (h *Handler) InvitePatient(w http.ResponseWriter, r *http.Request) {
+	var req invitePatientRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	req.DisplayName = strings.TrimSpace(req.DisplayName)
+	if req.DisplayName == "" {
+		http.Error(w, "display_name required", http.StatusBadRequest)
+		return
+	}
+
+	tenantID := callerTenantID(r)
+	if tenantID == 0 {
+		http.Error(w, "invite requires a real tenant (system tenant cannot invite patients)", http.StatusBadRequest)
+		return
+	}
+
+	// 確認 tenant 活著
+	var tenantActive bool
+	if err := h.engine.DB().QueryRow(r.Context(),
+		`SELECT active FROM tenants WHERE id = $1`, tenantID).Scan(&tenantActive); err != nil || !tenantActive {
+		http.Error(w, "tenant not found or inactive", http.StatusBadRequest)
+		return
+	}
+
+	var userID int
+	err := withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), `
+			INSERT INTO users (display_name, role_id, tenant_id, active)
+			VALUES ($1, (SELECT id FROM roles WHERE name = 'patient'), $2, true)
+			RETURNING id`, req.DisplayName, tenantID).Scan(&userID)
+	})
+	if err != nil {
+		http.Error(w, "create failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	token, err := generateBindToken()
+	if err != nil {
+		http.Error(w, "token generation failed", http.StatusInternalServerError)
+		return
+	}
+	if err := h.rdb.Set(r.Context(), "bind:"+token, userID, bindTokenTTL).Err(); err != nil {
+		http.Error(w, "token store failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, createUserResponse{
+		UserID:     userID,
+		Token:      token,
+		BindingURL: buildBindingURL(r, token),
+		ExpiresAt:  time.Now().Add(bindTokenTTL),
+	})
+}
+
+type setPasswordRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// SetUserPassword：POST /auth/admin/users/{id}/password
+// 給 super_admin / clinic-admin（同 tenant）設 user 的 email + 密碼，讓該 user
+// 可從 /admin/login 密碼登入。寫完會 RevokeUser 讓舊 session 失效。
+// clinic-admin 只能改自己 tenant 的 user；不可把 super_admin 設密碼（防提權）。
+func (h *Handler) SetUserPassword(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if !h.ensureTargetInTenant(w, r, id) {
+		return
+	}
+	var req setPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Email == "" {
+		http.Error(w, "email required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Password) < 8 {
+		http.Error(w, "password must be at least 8 characters", http.StatusBadRequest)
+		return
+	}
+
+	// 擋提權：非 super_admin 不可把 target user 改成 super_admin 角色
+	if !isSuperAdmin(r) {
+		var targetRole string
+		if err := h.engine.DB().QueryRow(r.Context(), `
+			SELECT r.name FROM users u JOIN roles r ON u.role_id = r.id
+			WHERE u.id = $1`, id).Scan(&targetRole); err == nil && targetRole == "super_admin" {
+			http.Error(w, "cannot set password for super_admin", http.StatusForbidden)
+			return
+		}
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 10)
+	if err != nil {
+		http.Error(w, "password hash failed", http.StatusInternalServerError)
+		return
+	}
+
+	err = withAudit(r, h.engine.DB(), func(tx pgx.Tx) error {
+		_, execErr := tx.Exec(r.Context(),
+			`UPDATE users SET google_email = $1, password_hash = $2 WHERE id = $3`,
+			req.Email, string(hash), id)
+		return execErr
+	})
+	if err != nil {
+		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 改密碼 = 憑證輪替 → 吊銷既有 session
+	_ = token.RevokeUser(r.Context(), h.rdb, id, h.cfg.RefreshTokenExpire)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "password updated", "id": id, "email": req.Email})
 }
 
 func generateBindToken() (string, error) {

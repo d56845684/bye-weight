@@ -10,9 +10,22 @@ const ROLE_HOME: Record<string, string> = {
   patient: "/patient/food-logs",
   staff: "/staff/inbody",
   nutritionist: "/nutritionist/push",
-  admin: "/admin/users",
-  super_admin: "/admin/users",
+  admin: "/admin/patients",         // clinic-admin：統一後台病患頁
+  super_admin: "/admin/tenants",    // 系統管理員：租戶管理
 };
+
+// 綁定連結（line-bind 成功）的 patient 若還沒在 main_service 建 profile，
+// GET /patients/me 回 404 → 導去 /patient/register 填表；其餘情況走 ROLE_HOME。
+// 只有「邀請連結」這個一次性流程會呼叫；fast path / 一般 line-token 不做這件事。
+async function resolvePatientHome(nextPath: string | null): Promise<string> {
+  try {
+    const res = await fetch("/api/v1/patients/me", { credentials: "include" });
+    if (res.status === 404) return "/patient/register";
+  } catch {
+    // ignore；fallback 到正常 ROLE_HOME
+  }
+  return nextPath ?? "/patient/food-logs";
+}
 
 export default function LiffPage() {
   return (
@@ -46,7 +59,10 @@ function LiffInner() {
             const meRes = await fetch("/auth/v1/me", { credentials: "include" });
             if (meRes.ok) {
               const me = await meRes.json();
-              const target = nextPath ?? ROLE_HOME[me.role] ?? "/patient/food-logs";
+              const target =
+                me.role === "patient"
+                  ? await resolvePatientHome(nextPath)
+                  : nextPath ?? ROLE_HOME[me.role] ?? "/patient/food-logs";
               router.replace(target);
               return;
             }
@@ -67,7 +83,7 @@ function LiffInner() {
           return;
         }
 
-        const endpoint = bindingToken ? "/auth/line-bind" : "/auth/line-token";
+        const endpoint = bindingToken ? "/auth/v1/line-bind" : "/auth/v1/line-token";
         const body = bindingToken
           ? { access_token: accessToken, binding_token: bindingToken }
           : { access_token: accessToken };
@@ -98,7 +114,13 @@ function LiffInner() {
         }
 
         const data = await res.json();
-        const target = nextPath ?? ROLE_HOME[data.role] ?? "/patient/food-logs";
+        // role=patient 一律要先檢查 patient profile 有沒有建起來，才決定要去
+        // register 還是 ROLE_HOME。這樣「首次綁定時 register 失敗」的 user 下次
+        // 再開 LIFF 還會被導回 /patient/register 讓他重試，不會卡在空頁面。
+        const target =
+          data.role === "patient"
+            ? await resolvePatientHome(nextPath)
+            : nextPath ?? ROLE_HOME[data.role] ?? "/patient/food-logs";
         router.push(target);
       } catch (e: any) {
         setStatus(`登入失敗：${e.message}`);

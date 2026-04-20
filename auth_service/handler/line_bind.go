@@ -62,8 +62,10 @@ func (h *Handler) LineBind(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. 更新 users.line_uuid + 一次性消耗 token
+	// active=true 是為了讓 admin 走「unbind → 重發 binding-token → 重新綁定」流程時
+	// 使用者綁完能立刻用 LINE 登入，不必再回後台手動啟用。
 	if _, err := h.engine.DB().Exec(ctx, `
-		UPDATE users SET line_uuid = $1 WHERE id = $2`,
+		UPDATE users SET line_uuid = $1, active = true WHERE id = $2`,
 		profile.UserID, userID); err != nil {
 		http.Error(w, "bind failed: "+err.Error(), http.StatusInternalServerError)
 		return

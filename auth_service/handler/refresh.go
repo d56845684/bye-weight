@@ -19,19 +19,14 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid refresh token", http.StatusUnauthorized)
 		return
 	}
-
 	if claims.TokenType != "refresh" {
 		http.Error(w, "not a refresh token", http.StatusUnauthorized)
 		return
 	}
 
-	revoked, err := token.IsRevoked(r.Context(), h.rdb, claims.ID)
-	if err != nil {
-		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	if revoked {
-		http.Error(w, "token revoked", http.StatusUnauthorized)
+	// 共用 verifySession：blacklist + user.active + tenant.active + user_revoke
+	if code, err := h.verifySession(r, claims); err != nil {
+		http.Error(w, err.Error(), code)
 		return
 	}
 
