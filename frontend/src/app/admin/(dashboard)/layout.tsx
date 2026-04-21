@@ -89,6 +89,15 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
             <Can action="main:inbody:write">
               <Link href="/admin/inbody-pending" className="hover:underline">InBody 待確認</Link>
             </Can>
+            <Can action="main:food_log:read">
+              <Link href="/admin/food-logs" className="hover:underline">飲食紀錄</Link>
+            </Can>
+            <Can action="main:visit:read">
+              <Link href="/admin/visits" className="hover:underline">看診紀錄</Link>
+            </Can>
+            <Can action="main:goal:read">
+              <Link href="/admin/patient-goals" className="hover:underline">目標歷史</Link>
+            </Can>
           </div>
           {role && (
             <span className="ml-auto text-xs opacity-80">

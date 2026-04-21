@@ -9,7 +9,7 @@ from database import get_db
 from deps import current_user, current_patient
 from models.food_log import FoodLog
 from models.patient import Patient, PatientGoal
-from schemas.food_log import FoodLogItem, FoodLogSummary, MacroPct
+from schemas.food_log import FoodLogAdminItem, FoodLogItem, FoodLogSummary, MacroPct
 from utils.cache import invalidate
 
 router = APIRouter(prefix="/food-logs", tags=["food-logs"])
@@ -53,6 +53,50 @@ async def list_food_logs(
             "ai_suggestion": log.ai_suggestion,
         }
         for log in logs
+    ]
+
+
+@router.get("/records", response_model=list[FoodLogAdminItem])
+async def list_records(
+    patient_id: int | None = Query(None, description="過濾單一病患"),
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin tenant-wide 飲食紀錄列表。JOIN patients 帶姓名 + 病歷號。
+    - 病患走 /food-logs/me/summary，不吃這支；IAM resource 已擋下。"""
+    since = datetime.combine(date.today() - timedelta(days=days - 1), datetime.min.time())
+    stmt = (
+        select(FoodLog, Patient.name, Patient.chart_no)
+        .join(Patient, Patient.id == FoodLog.patient_id, isouter=True)
+        .where(
+            FoodLog.tenant_id == user["tenant_id"],
+            FoodLog.deleted_at.is_(None),
+            FoodLog.logged_at >= since,
+        )
+    )
+    if patient_id is not None:
+        stmt = stmt.where(FoodLog.patient_id == patient_id)
+    stmt = stmt.order_by(FoodLog.logged_at.desc()).limit(limit).offset(offset)
+    rows = (await db.execute(stmt)).all()
+    return [
+        FoodLogAdminItem(
+            id=f.id,
+            patient_id=f.patient_id,
+            patient_name=pn,
+            chart_no=pc,
+            logged_at=f.logged_at,
+            meal_type=f.meal_type,
+            image_url=f.image_url,
+            total_calories=float(f.total_calories) if f.total_calories is not None else None,
+            total_protein=float(f.total_protein) if f.total_protein is not None else None,
+            total_carbs=float(f.total_carbs) if f.total_carbs is not None else None,
+            total_fat=float(f.total_fat) if f.total_fat is not None else None,
+            ai_suggestion=f.ai_suggestion,
+        )
+        for f, pn, pc in rows
     ]
 
 

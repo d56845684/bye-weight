@@ -13,3 +13,18 @@ class VisitTimelineItem(BaseModel):
     upcoming: bool = False
     days_away: int | None = None   # upcoming=true 時才填；= next_visit_date - today
     created_at: datetime
+
+
+class VisitAdminItem(BaseModel):
+    """Admin tenant-wide 列表用：帶病患姓名 / 病歷號。"""
+    id: int
+    patient_id: int
+    patient_name: str | None = None
+    chart_no: str | None = None
+    visit_date: date
+    next_visit_date: date | None = None
+    doctor_id: str | None = None
+    notes: str | None = None
+    upcoming: bool = False
+    days_away: int | None = None
+    created_at: datetime

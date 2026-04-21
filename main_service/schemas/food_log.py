@@ -33,6 +33,22 @@ class MacroPct(BaseModel):
     fat: float
 
 
+class FoodLogAdminItem(BaseModel):
+    """Admin 後台 tenant-wide 飲食列表用。帶病患姓名 + 病歷號避免前端 N+1。"""
+    id: int
+    patient_id: int
+    patient_name: str | None = None
+    chart_no: str | None = None
+    logged_at: datetime
+    meal_type: str | None = None
+    image_url: str | None = None
+    total_calories: float | None = None
+    total_protein: float | None = None
+    total_carbs: float | None = None
+    total_fat: float | None = None
+    ai_suggestion: str | None = None
+
+
 class FoodLogSummary(BaseModel):
     """病患 /me/summary 用：聚合今日餐點、當前目標、30 天序列一次回。
     前端 Direction B Home + Diet + Trends tab 共用同一包資料。
