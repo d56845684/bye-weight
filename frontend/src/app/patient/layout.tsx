@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 
 // Direction B: iOS-style bottom tab nav，mint/teal 主色系。
 // 5 個 tab：首頁 / 身體 / 飲食 / 看診 / 趨勢。
@@ -19,14 +20,42 @@ export default function PatientLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname() || "/patient";
+  const router = useRouter();
   // 精確 match 首頁；其他 prefix match
   const isActive = (href: string) =>
     href === "/patient" ? pathname === "/patient" : pathname.startsWith(href);
 
+  // Safety net：任何入口（LINE / Google SSO / 任意登入方式）進到 /patient/* 但還沒建
+  // patient profile 的 role=patient 用戶，一律導去 /patient/register 完成建立。
+  // 放在 layout 是為了不用在每個入口頁（LIFF / bind-google / 未來其他登入）重覆 check。
+  // /patient/register 本身要跳過，否則會自己打自己的循環。
+  const isRegisterPage = pathname.startsWith("/patient/register");
+  const [profileChecked, setProfileChecked] = useState(isRegisterPage);
+  useEffect(() => {
+    if (isRegisterPage) { setProfileChecked(true); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/v1/patients/me", { credentials: "include" });
+        if (cancelled) return;
+        if (res.status === 404) {
+          router.replace("/patient/register");
+          return;
+        }
+      } catch {
+        // 網路錯誤不擋畫面，讓下層頁面自己 handle error
+      }
+      if (!cancelled) setProfileChecked(true);
+    })();
+    return () => { cancelled = true; };
+  }, [isRegisterPage, router]);
+
   return (
     <div className="min-h-screen bg-[#f4f6f5] flex flex-col">
       <main className="flex-1 max-w-md w-full mx-auto px-4 pt-5 pb-24">
-        {children}
+        {profileChecked ? children : (
+          <div className="text-sm text-gray-500 text-center py-10">載入中…</div>
+        )}
       </main>
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-black/5 pt-2 pb-6">
         <div className="max-w-md mx-auto flex justify-around">

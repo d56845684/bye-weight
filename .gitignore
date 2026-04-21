@@ -21,6 +21,10 @@ node_modules/
 .next/
 frontend/.next/
 frontend/node_modules/
+# pnpm lockfile 不進 git（Dockerfile 只 COPY package.json，build 時重裝）
+frontend/pnpm-lock.yaml
+# tsc --incremental cache
+frontend/tsconfig.tsbuildinfo
 
 # IDE
 .vscode/
