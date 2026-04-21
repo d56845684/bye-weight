@@ -3,6 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { fetchAPI } from "@/lib/api";
+import { Can } from "@/lib/permissions";
 
 // Admin 單一病患 detail 頁：5 tab（基本資料 / InBody / 飲食 / 看診 / 目標），
 // 資料靠 GET /patients/{id}/detail aggregator 一次抓完，不切多支 endpoint。
@@ -242,14 +243,18 @@ function BasicTab({
       </div>
       {error && <div className="bg-red-50 text-red-700 p-3 rounded text-sm">{error}</div>}
       <div className="flex gap-2 pt-2">
-        <button onClick={save} disabled={saving || !dirty}
-                className="bg-red-700 text-white px-6 py-2 rounded hover:bg-red-800 disabled:opacity-50">
-          {saving ? "儲存中…" : "儲存"}
-        </button>
-        <button onClick={onDelete}
-                className="px-6 py-2 border border-red-400 text-red-700 rounded hover:bg-red-50">
-          刪除
-        </button>
+        <Can action="main:patient:write">
+          <button onClick={save} disabled={saving || !dirty}
+                  className="bg-red-700 text-white px-6 py-2 rounded hover:bg-red-800 disabled:opacity-50">
+            {saving ? "儲存中…" : "儲存"}
+          </button>
+        </Can>
+        <Can action="main:patient:delete">
+          <button onClick={onDelete}
+                  className="px-6 py-2 border border-red-400 text-red-700 rounded hover:bg-red-50">
+            刪除
+          </button>
+        </Can>
       </div>
     </div>
   );
@@ -418,12 +423,14 @@ function GoalsTab({
         <div className="text-xs text-gray-500">
           append-only 歷史，每次調整 INSERT 新 row，舊 row 永遠保留
         </div>
-        <button
-          onClick={() => setShowForm(true)}
-          className="ml-auto text-sm px-3 py-1.5 bg-red-700 text-white rounded hover:bg-red-800"
-        >
-          + 新增目標
-        </button>
+        <Can action="main:goal:write">
+          <button
+            onClick={() => setShowForm(true)}
+            className="ml-auto text-sm px-3 py-1.5 bg-red-700 text-white rounded hover:bg-red-800"
+          >
+            + 新增目標
+          </button>
+        </Can>
       </div>
       {rows.length === 0 ? (
         <Empty label="尚未設定目標" />

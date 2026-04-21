@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fetchAPI } from "@/lib/api";
+import { Can } from "@/lib/permissions";
 
 type Patient = {
   id: number;
@@ -74,12 +75,14 @@ export default function ClinicPatientsPage() {
         >
           搜尋
         </button>
-        <Link
-          href="/admin/patients/new"
-          className="ml-auto text-sm px-3 py-1 bg-red-700 text-white rounded hover:bg-red-800"
-        >
-          + 新增病患
-        </Link>
+        <Can action="main:patient:write">
+          <Link
+            href="/admin/patients/new"
+            className="ml-auto text-sm px-3 py-1 bg-red-700 text-white rounded hover:bg-red-800"
+          >
+            + 新增病患
+          </Link>
+        </Can>
       </div>
 
       {error && <div className="bg-red-50 text-red-700 p-3 rounded mb-3">錯誤：{error}</div>}
@@ -123,14 +126,16 @@ export default function ClinicPatientsPage() {
                       href={`/admin/patients/${p.id}`}
                       className="text-xs text-red-700 hover:underline"
                     >
-                      編輯
+                      檢視
                     </Link>
-                    <button
-                      onClick={() => softDelete(p)}
-                      className="text-xs text-gray-500 hover:text-red-700 hover:underline"
-                    >
-                      刪除
-                    </button>
+                    <Can action="main:patient:delete">
+                      <button
+                        onClick={() => softDelete(p)}
+                        className="text-xs text-gray-500 hover:text-red-700 hover:underline"
+                      >
+                        刪除
+                      </button>
+                    </Can>
                   </td>
                 </tr>
               ))}
