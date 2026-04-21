@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from deps import current_user, current_patient
 from models.food_log import FoodLog
-from models.patient import Patient
+from models.patient import Patient, PatientGoal
 from schemas.food_log import FoodLogItem, FoodLogSummary, MacroPct
 from utils.cache import invalidate
 
@@ -85,6 +85,21 @@ async def food_log_summary(
     )
     rows = (await db.execute(stmt)).scalars().all()
 
+    # 「當前目標」= 最新一筆 effective_from <= today 的 patient_goals row。
+    # patient_goals 歷史 append-only，新的就蓋掉舊的邏輯上 = 查 LIMIT 1。
+    goal_stmt = (
+        select(PatientGoal)
+        .where(
+            PatientGoal.patient_id == patient.id,
+            PatientGoal.tenant_id == user["tenant_id"],
+            PatientGoal.deleted_at.is_(None),
+            PatientGoal.effective_from <= today,
+        )
+        .order_by(PatientGoal.effective_from.desc())
+        .limit(1)
+    )
+    current_goal = (await db.execute(goal_stmt)).scalar_one_or_none()
+
     # 以日期聚合
     by_day: dict[date, list[FoodLog]] = defaultdict(list)
     for r in rows:
@@ -151,8 +166,21 @@ async def food_log_summary(
             fat=round(sum_f / non_null_days, 1),
         )
 
+    target_macros: MacroPct | None = None
+    if current_goal and (
+        current_goal.target_carbs_pct is not None
+        or current_goal.target_protein_pct is not None
+        or current_goal.target_fat_pct is not None
+    ):
+        target_macros = MacroPct(
+            carbs=float(current_goal.target_carbs_pct or 0),
+            protein=float(current_goal.target_protein_pct or 0),
+            fat=float(current_goal.target_fat_pct or 0),
+        )
+
     return FoodLogSummary(
-        target_kcal=None,  # patient.daily_kcal_target — schema 還沒這欄（Phase 3）
+        target_kcal=current_goal.daily_kcal if current_goal else None,
+        target_macros=target_macros,
         today_kcal=round(today_kcal, 1),
         today_meals=today_meals,
         dates=dates,

@@ -23,6 +23,14 @@ class InbodyRecord(AuditMixin, Base):
     muscle_mass: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     visceral_fat: Mapped[int | None] = mapped_column(Integer)
     metabolic_rate: Mapped[Decimal | None] = mapped_column(Numeric(6, 0))
+    # Phase 3 擴充：身體年齡 + 水分 / 蛋白 / 礦物（OCR prompt 擴充後才有資料，舊 row 為 NULL）
+    body_age: Mapped[int | None] = mapped_column(Integer)
+    total_body_water: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    protein_mass: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    mineral_mass: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    # 分部位肌肉 / 脂肪：{la, ra, tr, ll, rl}（左右臂 / 軀幹 / 左右腿），單位 kg
+    muscle_segmental: Mapped[dict | None] = mapped_column(JSONB)
+    fat_segmental: Mapped[dict | None] = mapped_column(JSONB)
     image_url: Mapped[str | None] = mapped_column(Text)
     raw_json: Mapped[dict | None] = mapped_column(JSONB)
     match_status: Mapped[str] = mapped_column(String(20), default="matched")

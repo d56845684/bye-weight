@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, update
@@ -7,9 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from deps import current_user
-from models.patient import Patient, LineBinding
+from models.food_log import FoodLog
+from models.inbody import InbodyRecord
+from models.patient import Patient, LineBinding, PatientGoal
+from models.visit import Visit
 from schemas.patient import (
     PatientCreateRequest,
+    PatientDetailOut,
+    PatientGoalItem,
     PatientOut,
     PatientRegisterRequest,
     PatientSelfOut,
@@ -197,6 +202,147 @@ async def get_patient(
     if not patient:
         raise HTTPException(404, "patient not found")
     return _to_out(patient)
+
+
+@router.get("/{patient_id}/detail", response_model=PatientDetailOut)
+async def get_patient_detail(
+    patient_id: int,
+    food_log_days: int = Query(30, ge=1, le=365),
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin 後台單一病患 detail：一次拿完 profile + goals + inbody / food / visits 歷史。
+    資料量級通常 < 30KB，不切多支 endpoint 避免 5 次 round-trip。
+
+    patient-self 走 /patients/me 系列，不碰這支（IAM resource 也比對不上）。"""
+    patient = (await db.execute(
+        select(Patient).where(
+            Patient.id == patient_id,
+            Patient.tenant_id == user["tenant_id"],
+            Patient.deleted_at.is_(None),
+        )
+    )).scalar_one_or_none()
+    if not patient:
+        raise HTTPException(404, "patient not found")
+
+    # 四個子 query 並列跑，event loop 下幾乎無額外成本（pgxpool 可並發）。
+    # SQLAlchemy async session 不是 thread-safe，所以依序 await，但 pg 端 batch planning
+    # 成本可忽略（每個 query <1ms）。
+    inbody_rows = (await db.execute(
+        select(InbodyRecord)
+        .where(
+            InbodyRecord.patient_id == patient_id,
+            InbodyRecord.tenant_id == user["tenant_id"],
+            InbodyRecord.deleted_at.is_(None),
+        )
+        .order_by(InbodyRecord.measured_at.desc())
+        .limit(50)
+    )).scalars().all()
+
+    food_since = datetime.combine(date.today() - timedelta(days=food_log_days - 1), datetime.min.time())
+    food_rows = (await db.execute(
+        select(FoodLog)
+        .where(
+            FoodLog.patient_id == patient_id,
+            FoodLog.tenant_id == user["tenant_id"],
+            FoodLog.deleted_at.is_(None),
+            FoodLog.logged_at >= food_since,
+        )
+        .order_by(FoodLog.logged_at.desc())
+        .limit(500)
+    )).scalars().all()
+
+    visit_rows = (await db.execute(
+        select(Visit)
+        .where(
+            Visit.patient_id == patient_id,
+            Visit.tenant_id == user["tenant_id"],
+            Visit.deleted_at.is_(None),
+        )
+        .order_by(Visit.visit_date.desc())
+        .limit(50)
+    )).scalars().all()
+
+    goal_rows = (await db.execute(
+        select(PatientGoal)
+        .where(
+            PatientGoal.patient_id == patient_id,
+            PatientGoal.tenant_id == user["tenant_id"],
+            PatientGoal.deleted_at.is_(None),
+        )
+        .order_by(PatientGoal.effective_from.desc())
+        .limit(50)
+    )).scalars().all()
+
+    today = date.today()
+    return PatientDetailOut(
+        patient=PatientOut(**_to_out(patient)),
+        goals=[
+            PatientGoalItem(
+                id=g.id,
+                effective_from=g.effective_from,
+                daily_kcal=g.daily_kcal,
+                target_weight=float(g.target_weight) if g.target_weight is not None else None,
+                target_body_fat=float(g.target_body_fat) if g.target_body_fat is not None else None,
+                target_carbs_pct=float(g.target_carbs_pct) if g.target_carbs_pct is not None else None,
+                target_protein_pct=float(g.target_protein_pct) if g.target_protein_pct is not None else None,
+                target_fat_pct=float(g.target_fat_pct) if g.target_fat_pct is not None else None,
+                set_by=g.set_by,
+                notes=g.notes,
+                created_at=g.created_at,
+            )
+            for g in goal_rows
+        ],
+        inbody_records=[
+            {
+                "id": r.id,
+                "measured_at": r.measured_at.isoformat(),
+                "weight": float(r.weight) if r.weight is not None else None,
+                "bmi": float(r.bmi) if r.bmi is not None else None,
+                "body_fat_pct": float(r.body_fat_pct) if r.body_fat_pct is not None else None,
+                "muscle_mass": float(r.muscle_mass) if r.muscle_mass is not None else None,
+                "visceral_fat": r.visceral_fat,
+                "metabolic_rate": float(r.metabolic_rate) if r.metabolic_rate is not None else None,
+                "body_age": r.body_age,
+                "total_body_water": float(r.total_body_water) if r.total_body_water is not None else None,
+                "protein_mass": float(r.protein_mass) if r.protein_mass is not None else None,
+                "mineral_mass": float(r.mineral_mass) if r.mineral_mass is not None else None,
+                "muscle_segmental": r.muscle_segmental,
+                "fat_segmental": r.fat_segmental,
+                "match_status": r.match_status,
+            }
+            for r in inbody_rows
+        ],
+        food_logs=[
+            {
+                "id": f.id,
+                "logged_at": f.logged_at.isoformat(),
+                "meal_type": f.meal_type,
+                "image_url": f.image_url,
+                "food_items": f.food_items,
+                "total_calories": float(f.total_calories) if f.total_calories is not None else None,
+                "total_protein": float(f.total_protein) if f.total_protein is not None else None,
+                "total_carbs": float(f.total_carbs) if f.total_carbs is not None else None,
+                "total_fat": float(f.total_fat) if f.total_fat is not None else None,
+                "ai_suggestion": f.ai_suggestion,
+            }
+            for f in food_rows
+        ],
+        visits=[
+            {
+                "id": v.id,
+                "visit_date": v.visit_date.isoformat(),
+                "next_visit_date": v.next_visit_date.isoformat() if v.next_visit_date else None,
+                "doctor_id": v.doctor_id,
+                "notes": v.notes,
+                "upcoming": v.next_visit_date is not None and v.next_visit_date >= today,
+                "days_away": ((v.next_visit_date - today).days
+                              if v.next_visit_date and v.next_visit_date >= today else None),
+                "created_at": v.created_at.isoformat(),
+            }
+            for v in visit_rows
+        ],
+    )
 
 
 @router.patch("/{patient_id}", response_model=PatientOut)

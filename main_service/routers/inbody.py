@@ -27,10 +27,16 @@ from schemas.inbody import (
     InbodySummary,
     PendingPatientCandidate,
     ResolvePendingRequest,
+    Segmental,
 )
 from utils.cache import invalidate
 
 router = APIRouter(prefix="/inbody", tags=["inbody"])
+
+
+def _num(v) -> float | None:
+    """Decimal / Numeric → float；None 跟 0 正確區分。"""
+    return float(v) if v is not None else None
 
 
 # pending 狀態機：
@@ -97,24 +103,42 @@ async def inbody_summary(
     )
     rows = (await db.execute(stmt)).scalars().all()
 
+    def _seg(raw: dict | None) -> Segmental | None:
+        if not raw or not isinstance(raw, dict):
+            return None
+        return Segmental(
+            la=_num(raw.get("la")),
+            ra=_num(raw.get("ra")),
+            tr=_num(raw.get("tr")),
+            ll=_num(raw.get("ll")),
+            rl=_num(raw.get("rl")),
+        )
+
     latest_obj: InbodyLatest | None = None
     if rows:
         r = rows[0]
         p = rows[1] if len(rows) > 1 else None
         latest_obj = InbodyLatest(
             measured_at=r.measured_at,
-            weight=float(r.weight) if r.weight is not None else None,
-            weight_prev=float(p.weight) if p and p.weight is not None else None,
-            bmi=float(r.bmi) if r.bmi is not None else None,
-            bmi_prev=float(p.bmi) if p and p.bmi is not None else None,
-            body_fat_pct=float(r.body_fat_pct) if r.body_fat_pct is not None else None,
-            body_fat_pct_prev=float(p.body_fat_pct) if p and p.body_fat_pct is not None else None,
-            muscle_mass=float(r.muscle_mass) if r.muscle_mass is not None else None,
-            muscle_mass_prev=float(p.muscle_mass) if p and p.muscle_mass is not None else None,
+            weight=_num(r.weight),
+            weight_prev=_num(p.weight) if p else None,
+            bmi=_num(r.bmi),
+            bmi_prev=_num(p.bmi) if p else None,
+            body_fat_pct=_num(r.body_fat_pct),
+            body_fat_pct_prev=_num(p.body_fat_pct) if p else None,
+            muscle_mass=_num(r.muscle_mass),
+            muscle_mass_prev=_num(p.muscle_mass) if p else None,
             visceral_fat=r.visceral_fat,
             visceral_fat_prev=p.visceral_fat if p else None,
-            metabolic_rate=float(r.metabolic_rate) if r.metabolic_rate is not None else None,
-            metabolic_rate_prev=float(p.metabolic_rate) if p and p.metabolic_rate is not None else None,
+            metabolic_rate=_num(r.metabolic_rate),
+            metabolic_rate_prev=_num(p.metabolic_rate) if p else None,
+            body_age=r.body_age,
+            body_age_prev=p.body_age if p else None,
+            total_body_water=_num(r.total_body_water),
+            protein_mass=_num(r.protein_mass),
+            mineral_mass=_num(r.mineral_mass),
+            muscle_segmental=_seg(r.muscle_segmental),
+            fat_segmental=_seg(r.fat_segmental),
         )
 
     # series 升冪排（前端 x 軸左到右 = 時間軸）

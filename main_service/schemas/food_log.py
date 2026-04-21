@@ -34,9 +34,13 @@ class MacroPct(BaseModel):
 
 
 class FoodLogSummary(BaseModel):
-    """病患 /me/summary 用：聚合今日餐點、目標熱量、30 天序列一次回。
-    前端 Direction B Home + Diet + Trends tab 共用同一包資料。"""
-    target_kcal: int | None = None      # patient.daily_kcal_target（目前 schema 沒有 → 回 None，前端 placeholder）
+    """病患 /me/summary 用：聚合今日餐點、當前目標、30 天序列一次回。
+    前端 Direction B Home + Diet + Trends tab 共用同一包資料。
+
+    target_* 來自 patient_goals 最新生效 row（歷史 append-only）；null 代表營養師
+    尚未設定，前端可 fallback 到 UI 預設。"""
+    target_kcal: int | None = None
+    target_macros: MacroPct | None = None  # carbs/protein/fat % 目標，三個都 null 時整包 null
     today_kcal: float
     today_meals: list[FoodLogItem]
     dates: list[str]                    # range days，時間升冪

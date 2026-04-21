@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -83,3 +83,30 @@ class PatientSelfOut(BaseModel):
     national_id: str | None
     address: str | None
     chart_no: str | None
+
+
+class PatientGoalItem(BaseModel):
+    """patient_goals row out。歷史 append-only，前端依 effective_from desc 排。"""
+    id: int
+    effective_from: date
+    daily_kcal: int | None = None
+    target_weight: float | None = None
+    target_body_fat: float | None = None
+    target_carbs_pct: float | None = None
+    target_protein_pct: float | None = None
+    target_fat_pct: float | None = None
+    set_by: int | None = None
+    notes: str | None = None
+    created_at: datetime
+
+
+class PatientDetailOut(BaseModel):
+    """Admin 單一病患 detail 頁用：profile + 完整歷史一次抓回，前端分 tab 顯示。
+    資料量級：14 天 × 4 餐 food_logs ≈ 50 筆、inbody / visits / goals 各 <10 筆，
+    單次 payload < 30KB，不用延遲載入複雜度。
+    """
+    patient: PatientOut
+    goals: list[PatientGoalItem]
+    inbody_records: list[dict]      # schemas.inbody.InbodyRecordItem 形狀
+    food_logs: list[dict]           # schemas.food_log.FoodLogItem 形狀（過去 30 天）
+    visits: list[dict]              # schemas.visit.VisitTimelineItem 形狀
