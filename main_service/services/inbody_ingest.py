@@ -13,6 +13,15 @@ from services.ocr import ocr_inbody
 from utils.cache import invalidate
 
 
+def _clean_seg(raw) -> dict | None:
+    """OCR 吐的 segmental 可能是 None / 空 object / 部分 key，不存原始欄位順序只取五個。
+    不是 dict 或整個 empty → None，不要進 DB 塞垃圾。"""
+    if not isinstance(raw, dict):
+        return None
+    out = {k: raw.get(k) for k in ("la", "ra", "tr", "ll", "rl") if raw.get(k) is not None}
+    return out or None
+
+
 async def ingest_inbody(
     db: AsyncSession,
     uploader_user_id: int,
@@ -73,6 +82,12 @@ async def ingest_inbody(
             muscle_mass=ocr_result.get("muscle_mass"),
             visceral_fat=ocr_result.get("visceral_fat"),
             metabolic_rate=ocr_result.get("metabolic_rate"),
+            body_age=ocr_result.get("body_age"),
+            total_body_water=ocr_result.get("total_body_water"),
+            protein_mass=ocr_result.get("protein_mass"),
+            mineral_mass=ocr_result.get("mineral_mass"),
+            muscle_segmental=_clean_seg(ocr_result.get("muscle_segmental")),
+            fat_segmental=_clean_seg(ocr_result.get("fat_segmental")),
             image_url=image_url,
             raw_json=ocr_result,
             match_status="matched",

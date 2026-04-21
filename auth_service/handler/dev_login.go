@@ -30,8 +30,13 @@ func (h *Handler) findUserForDevLogin(ctx context.Context, req devLoginRequest) 
 		}
 		err = h.engine.DB().QueryRow(ctx, `
 			SELECT u.id, r.name, u.tenant_id
-			FROM users u JOIN roles r ON u.role_id = r.id
-			WHERE u.line_uuid = $1 AND u.active = true
+			FROM users u
+			JOIN roles r ON u.role_id = r.id
+			JOIN auth_identities i ON i.user_id = u.id
+			WHERE i.provider = 'line'
+			  AND i.subject = $1
+			  AND i.deleted_at IS NULL
+			  AND u.active = true
 		`, lineUUID).Scan(&u.ID, &u.RoleName, &u.TenantID)
 	}
 	if err != nil {

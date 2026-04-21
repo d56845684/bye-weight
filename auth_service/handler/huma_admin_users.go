@@ -50,11 +50,13 @@ type ListUsersOutput struct {
 }
 
 func (h *Handler) HumaListUsers(ctx context.Context, in *ListUsersInput) (*ListUsersOutput, error) {
+	// 分兩步驟，避免 N+1 又不用 SQL JSON aggregation：
+	//   1) 列 users（無 identity 也要看得到）
+	//   2) 一次 batch 撈這些 user 的所有 identities，在 Go 側 group by user_id
 	query := `
-		SELECT u.id, u.display_name, u.line_uuid, u.google_email,
-		       r.name, u.tenant_id, t.slug, u.active
+		SELECT u.id, u.display_name, r.name, u.tenant_id, t.slug, u.active
 		FROM users u
-		JOIN roles r   ON u.role_id  = r.id
+		JOIN roles   r ON u.role_id   = r.id
 		JOIN tenants t ON u.tenant_id = t.id
 		WHERE u.deleted_at IS NULL`
 	args := []any{}
@@ -71,24 +73,46 @@ func (h *Handler) HumaListUsers(ctx context.Context, in *ListUsersInput) (*ListU
 	defer rows.Close()
 
 	users := []adminUserRow{}
+	// 存 index 而非 &users[i]：append 觸發 realloc 會讓舊指標失效。
+	idxByID := map[int]int{}
+	ids := []int{}
 	for rows.Next() {
 		var u adminUserRow
 		if err := rows.Scan(
-			&u.ID, &u.DisplayName, &u.LineUUID, &u.GoogleEmail,
-			&u.Role, &u.TenantID, &u.TenantSlug, &u.Active,
+			&u.ID, &u.DisplayName, &u.Role, &u.TenantID, &u.TenantSlug, &u.Active,
 		); err != nil {
 			return nil, huma.Error500InternalServerError("scan failed: " + err.Error())
 		}
-		methods := []string{}
-		if u.LineUUID != nil && *u.LineUUID != "" {
-			methods = append(methods, "line")
-		}
-		if u.GoogleEmail != nil && *u.GoogleEmail != "" {
-			methods = append(methods, "password")
-		}
-		u.AuthMethods = methods
+		u.AuthMethods = []string{}
+		u.Identities = []adminUserIdentity{}
 		users = append(users, u)
+		idxByID[u.ID] = len(users) - 1
+		ids = append(ids, u.ID)
 	}
+
+	if len(ids) > 0 {
+		idRows, err := h.engine.DB().Query(ctx, `
+			SELECT user_id, provider, subject, created_at, last_used_at
+			FROM auth_identities
+			WHERE user_id = ANY($1) AND deleted_at IS NULL
+			ORDER BY user_id, provider`, ids)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("identities query failed: " + err.Error())
+		}
+		defer idRows.Close()
+		for idRows.Next() {
+			var uid int
+			var ident adminUserIdentity
+			if err := idRows.Scan(&uid, &ident.Provider, &ident.Subject, &ident.CreatedAt, &ident.LastUsedAt); err != nil {
+				return nil, huma.Error500InternalServerError("identity scan failed: " + err.Error())
+			}
+			if idx, ok := idxByID[uid]; ok {
+				users[idx].Identities = append(users[idx].Identities, ident)
+				users[idx].AuthMethods = append(users[idx].AuthMethods, ident.Provider)
+			}
+		}
+	}
+
 	out := &ListUsersOutput{}
 	out.Body.Users = users
 	return out, nil
@@ -342,6 +366,9 @@ func (h *Handler) HumaUpdateUser(ctx context.Context, in *UpdateUserInput) (*upd
 	if req.Role != "" || req.TenantID != nil || req.Active != nil {
 		_ = token.RevokeUser(ctx, h.rdb, in.ID, h.cfg.RefreshTokenExpire)
 	}
+	if req.Active != nil {
+		_ = token.InvalidateUserActive(ctx, h.rdb, in.ID)
+	}
 	out := &updateStatusOut{}
 	out.Body.Status = "updated"
 	out.Body.ID = in.ID
@@ -377,14 +404,22 @@ func (h *Handler) HumaUnbindUser(ctx context.Context, in *UnbindUserInput) (*unb
 	}
 
 	err := withAuditCtx(ctx, h.engine.DB(), in.XUserID, func(tx pgx.Tx) error {
-		_, execErr := tx.Exec(ctx,
-			`UPDATE users SET line_uuid = NULL, active = false WHERE id = $1`, in.ID)
-		return execErr
+		// Soft-delete the LINE identity；deleted_by 由 app.current_user session 變數帶入。
+		if _, err := tx.Exec(ctx, `
+			UPDATE auth_identities
+			SET deleted_at = NOW(),
+			    deleted_by = NULLIF(current_setting('app.current_user', true), '')::INT
+			WHERE user_id = $1 AND provider = 'line' AND deleted_at IS NULL`, in.ID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE users SET active = false WHERE id = $1`, in.ID)
+		return err
 	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("unbind failed: " + err.Error())
 	}
 	_ = token.RevokeUser(ctx, h.rdb, in.ID, h.cfg.RefreshTokenExpire)
+	_ = token.InvalidateUserActive(ctx, h.rdb, in.ID)
 
 	out := &unbindUserOut{}
 	out.Body.Status = "unbound"
@@ -432,19 +467,28 @@ func (h *Handler) HumaDeleteUser(ctx context.Context, in *DeleteUserInput) (*del
 	}
 
 	err = withAuditCtx(ctx, h.engine.DB(), in.XUserID, func(tx pgx.Tx) error {
-		_, execErr := tx.Exec(ctx, `
+		if _, execErr := tx.Exec(ctx, `
 			UPDATE users
 			SET deleted_at = NOW(),
 			    deleted_by = NULLIF(current_setting('app.current_user', true), '')::INT,
-			    active     = false,
-			    line_uuid  = NULL
-			WHERE id = $1`, in.ID)
-		return execErr
+			    active     = false
+			WHERE id = $1`, in.ID); execErr != nil {
+			return execErr
+		}
+		// 連帶軟刪除該 user 所有 identity（LINE / password / 將來 Google / Apple ...），
+		// 讓之後的 login 查詢不會意外找回來。不用 CASCADE 因為這裡是 soft delete。
+		_, err := tx.Exec(ctx, `
+			UPDATE auth_identities
+			SET deleted_at = NOW(),
+			    deleted_by = NULLIF(current_setting('app.current_user', true), '')::INT
+			WHERE user_id = $1 AND deleted_at IS NULL`, in.ID)
+		return err
 	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("delete failed: " + err.Error())
 	}
 	_ = token.RevokeUser(ctx, h.rdb, in.ID, h.cfg.RefreshTokenExpire)
+	_ = token.InvalidateUserActive(ctx, h.rdb, in.ID)
 
 	out := &deleteUserOut{}
 	out.Body.Status = "deleted"
@@ -468,12 +512,19 @@ func (h *Handler) HumaRegenerateBindToken(ctx context.Context, in *RegenerateBin
 		return nil, err
 	}
 
-	var lineUUID *string
-	if err := h.engine.DB().QueryRow(ctx,
-		`SELECT line_uuid FROM users WHERE id = $1`, in.ID).Scan(&lineUUID); err != nil {
+	var userExists, lineBound bool
+	if err := h.engine.DB().QueryRow(ctx, `
+		SELECT
+		    EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL),
+		    EXISTS(SELECT 1 FROM auth_identities
+		           WHERE user_id = $1 AND provider = 'line' AND deleted_at IS NULL)
+	`, in.ID).Scan(&userExists, &lineBound); err != nil {
+		return nil, huma.Error500InternalServerError("lookup failed: " + err.Error())
+	}
+	if !userExists {
 		return nil, huma.Error404NotFound("user not found")
 	}
-	if lineUUID != nil && *lineUUID != "" {
+	if lineBound {
 		return nil, huma.Error409Conflict("user already bound to LINE")
 	}
 
@@ -489,6 +540,59 @@ func (h *Handler) HumaRegenerateBindToken(ctx context.Context, in *RegenerateBin
 		UserID:     in.ID,
 		Token:      tok,
 		BindingURL: buildBindingURL(tok),
+		ExpiresAt:  time.Now().Add(bindTokenTTL),
+	}
+	return out, nil
+}
+
+// ===== RegenerateGoogleBindToken：POST /auth/admin/users/{id}/google-binding-token =====
+//
+// 產一次性 Google 綁定 token 存 Redis `bind:google:{token}` → user_id，7 天 TTL。
+// 使用者在 /admin/bind-google?token=... 頁面走 Google OAuth，POST /auth/google-bind
+// 帶 credential + token 就會把 Google sub 綁進 auth_identities。
+
+type RegenerateGoogleBindTokenInput struct {
+	XTenantID int `header:"X-Tenant-Id"`
+	ID        int `path:"id"`
+}
+
+type RegenerateGoogleBindTokenOutput struct {
+	Body createUserResponse
+}
+
+func (h *Handler) HumaRegenerateGoogleBindToken(ctx context.Context, in *RegenerateGoogleBindTokenInput) (*RegenerateGoogleBindTokenOutput, error) {
+	if err := h.ensureTargetInTenantCtx(ctx, in.XTenantID, in.ID); err != nil {
+		return nil, err
+	}
+
+	var userExists, googleBound bool
+	if err := h.engine.DB().QueryRow(ctx, `
+		SELECT
+		    EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL),
+		    EXISTS(SELECT 1 FROM auth_identities
+		           WHERE user_id = $1 AND provider = 'google' AND deleted_at IS NULL)
+	`, in.ID).Scan(&userExists, &googleBound); err != nil {
+		return nil, huma.Error500InternalServerError("lookup failed: " + err.Error())
+	}
+	if !userExists {
+		return nil, huma.Error404NotFound("user not found")
+	}
+	if googleBound {
+		return nil, huma.Error409Conflict("user already bound to google")
+	}
+
+	tok, err := generateBindToken()
+	if err != nil {
+		return nil, huma.Error500InternalServerError("token generation failed")
+	}
+	if err := h.rdb.Set(ctx, "bind:google:"+tok, in.ID, bindTokenTTL).Err(); err != nil {
+		return nil, huma.Error500InternalServerError("token store failed: " + err.Error())
+	}
+	out := &RegenerateGoogleBindTokenOutput{}
+	out.Body = createUserResponse{
+		UserID:     in.ID,
+		Token:      tok,
+		BindingURL: "/admin/bind-google?token=" + tok,
 		ExpiresAt:  time.Now().Add(bindTokenTTL),
 	}
 	return out, nil
@@ -539,11 +643,21 @@ func (h *Handler) HumaSetUserPassword(ctx context.Context, in *SetUserPasswordIn
 	if err != nil {
 		return nil, huma.Error500InternalServerError("password hash failed")
 	}
+	// UPSERT 作法：先軟刪既有 password identity（用戶可能換 email），再 INSERT 新的。
+	// partial unique (user_id, provider) WHERE deleted_at IS NULL 保證只有一筆 live。
 	err = withAuditCtx(ctx, h.engine.DB(), in.XUserID, func(tx pgx.Tx) error {
-		_, execErr := tx.Exec(ctx,
-			`UPDATE users SET google_email = $1, password_hash = $2 WHERE id = $3`,
-			email, string(hash), in.ID)
-		return execErr
+		if _, e := tx.Exec(ctx, `
+			UPDATE auth_identities
+			SET deleted_at = NOW(),
+			    deleted_by = NULLIF(current_setting('app.current_user', true), '')::INT
+			WHERE user_id = $1 AND provider = 'password' AND deleted_at IS NULL`, in.ID); e != nil {
+			return e
+		}
+		_, e := tx.Exec(ctx, `
+			INSERT INTO auth_identities (user_id, provider, subject, secret_hash)
+			VALUES ($1, 'password', $2, $3)`,
+			in.ID, email, string(hash))
+		return e
 	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("update failed: " + err.Error())

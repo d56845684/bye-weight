@@ -1,6 +1,7 @@
 from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, Integer, String, DateTime
+from sqlalchemy import Boolean, Date, Integer, Numeric, String, DateTime
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from models._mixin import AuditMixin
@@ -43,6 +44,29 @@ class LineBinding(AuditMixin, Base):
     clinic_id: Mapped[str | None] = mapped_column(String(20))  # tenant 底下的 sub-scope
     line_uuid: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     bound_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PatientGoal(AuditMixin, Base):
+    """營養師 / 醫師設定的目標 snapshot。每次變更 INSERT 新 row 而非 UPDATE，
+    留完整歷史。當前目標 = 同 patient 最新 effective_from 的 row。"""
+    __tablename__ = "patient_goals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    patient_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tenant_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # InBody 目標
+    target_weight: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
+    target_body_fat: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    # 食物目標
+    daily_kcal: Mapped[int | None] = mapped_column(Integer)
+    target_carbs_pct: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    target_protein_pct: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    target_fat_pct: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    # meta
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
+    set_by: Mapped[int | None] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Employee(AuditMixin, Base):

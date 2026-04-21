@@ -1,9 +1,11 @@
 """InBody API。
 
-兩類使用者：
-- 病患 LIFF：`GET /inbody/history` 讀自己的。
+三類使用者：
+- 病患 LIFF：`GET /inbody/history` 讀自己歷史紀錄、`GET /inbody/me/summary`
+  一次拿「最新 + prev deltas + 30 天趨勢」給 dashboard 用。
 - Admin / nutritionist 後台：`GET/POST /inbody/pending/*` 處理 OCR 後
   無法自動歸屬的 pending（ambiguous / unmatched / ocr_failed）。
+- 全 tenant 檢視：`GET /inbody/records`。
 
 員工上傳入口走 LINE OA webhook（routers/line_webhook.py → services/inbody_ingest.py）。
 """
@@ -18,14 +20,23 @@ from deps import current_patient, current_user
 from models.inbody import InbodyPending, InbodyRecord
 from models.patient import Patient
 from schemas.inbody import (
+    InbodyLatest,
     InbodyPendingItem,
     InbodyRecordItem,
+    InbodySeries,
+    InbodySummary,
     PendingPatientCandidate,
     ResolvePendingRequest,
+    Segmental,
 )
 from utils.cache import invalidate
 
 router = APIRouter(prefix="/inbody", tags=["inbody"])
+
+
+def _num(v) -> float | None:
+    """Decimal / Numeric → float；None 跟 0 正確區分。"""
+    return float(v) if v is not None else None
 
 
 # pending 狀態機：
@@ -64,6 +75,83 @@ async def inbody_history(
         }
         for r in records
     ]
+
+
+@router.get("/me/summary", response_model=InbodySummary)
+async def inbody_summary(
+    days: int = Query(30, ge=1, le=365),
+    user: dict = Depends(current_user),
+    patient: Patient = Depends(current_patient),
+    db: AsyncSession = Depends(get_db),
+):
+    """病患自己的 dashboard 一站式讀取。
+
+    一次 query 回最近 N 天紀錄，Python 端：
+      - 取最新 + 倒數第二筆算 delta
+      - 按日期 asc 吐 series（前端畫圖）
+    避免前端多次 round-trip 或自己算差值。
+    """
+    stmt = (
+        select(InbodyRecord)
+        .where(
+            InbodyRecord.patient_id == patient.id,
+            InbodyRecord.tenant_id == user["tenant_id"],
+            InbodyRecord.deleted_at.is_(None),
+        )
+        .order_by(InbodyRecord.measured_at.desc())
+        .limit(days)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    def _seg(raw: dict | None) -> Segmental | None:
+        if not raw or not isinstance(raw, dict):
+            return None
+        return Segmental(
+            la=_num(raw.get("la")),
+            ra=_num(raw.get("ra")),
+            tr=_num(raw.get("tr")),
+            ll=_num(raw.get("ll")),
+            rl=_num(raw.get("rl")),
+        )
+
+    latest_obj: InbodyLatest | None = None
+    if rows:
+        r = rows[0]
+        p = rows[1] if len(rows) > 1 else None
+        latest_obj = InbodyLatest(
+            measured_at=r.measured_at,
+            weight=_num(r.weight),
+            weight_prev=_num(p.weight) if p else None,
+            bmi=_num(r.bmi),
+            bmi_prev=_num(p.bmi) if p else None,
+            body_fat_pct=_num(r.body_fat_pct),
+            body_fat_pct_prev=_num(p.body_fat_pct) if p else None,
+            muscle_mass=_num(r.muscle_mass),
+            muscle_mass_prev=_num(p.muscle_mass) if p else None,
+            visceral_fat=r.visceral_fat,
+            visceral_fat_prev=p.visceral_fat if p else None,
+            metabolic_rate=_num(r.metabolic_rate),
+            metabolic_rate_prev=_num(p.metabolic_rate) if p else None,
+            body_age=r.body_age,
+            body_age_prev=p.body_age if p else None,
+            total_body_water=_num(r.total_body_water),
+            protein_mass=_num(r.protein_mass),
+            mineral_mass=_num(r.mineral_mass),
+            muscle_segmental=_seg(r.muscle_segmental),
+            fat_segmental=_seg(r.fat_segmental),
+        )
+
+    # series 升冪排（前端 x 軸左到右 = 時間軸）
+    asc = list(reversed(rows))
+    return InbodySummary(
+        latest=latest_obj,
+        series=InbodySeries(
+            dates=[r.measured_at.date().isoformat() for r in asc],
+            weight=[float(r.weight) if r.weight is not None else None for r in asc],
+            body_fat_pct=[float(r.body_fat_pct) if r.body_fat_pct is not None else None for r in asc],
+            muscle_mass=[float(r.muscle_mass) if r.muscle_mass is not None else None for r in asc],
+        ),
+    )
 
 
 @router.get("/records", response_model=list[InbodyRecordItem])

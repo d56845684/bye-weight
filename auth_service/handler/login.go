@@ -47,14 +47,19 @@ type userRow struct {
 }
 
 // findUserByLineUUID：以 LINE UUID 查對應的 active user。用於 LineLogin /
-// LineBind post-bind re-lookup。
+// LineBind post-bind re-lookup。查 auth_identities (provider='line')。
 func (h *Handler) findUserByLineUUID(ctx context.Context, lineUUID string) (*userRow, error) {
 	var u userRow
 	err := h.engine.DB().QueryRow(ctx, `
 		SELECT u.id, r.name, u.tenant_id
 		FROM users u
 		JOIN roles r ON u.role_id = r.id
-		WHERE u.line_uuid = $1 AND u.active = true
+		JOIN auth_identities i ON i.user_id = u.id
+		WHERE i.provider = 'line'
+		  AND i.subject = $1
+		  AND i.deleted_at IS NULL
+		  AND u.active = true
+		  AND u.deleted_at IS NULL
 	`, lineUUID).Scan(&u.ID, &u.RoleName, &u.TenantID)
 	if err != nil {
 		return nil, err

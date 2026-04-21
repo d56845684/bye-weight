@@ -83,10 +83,6 @@ uStaff=$(curl -s -b "$SUPER" -X POST "$BASE/auth/v1/admin/users" \
     | jget "['user_id']")
 echo "  clinic-admin id=$uAdmin, staff id=$uStaff"
 
-# dev-login 需要 line_uuid，直接 UPDATE 補一個
-psql_auth "UPDATE users SET line_uuid='test-admin-$uAdmin' WHERE id=$uAdmin;" >/dev/null
-psql_auth "UPDATE users SET line_uuid='test-staff-$uStaff' WHERE id=$uStaff;" >/dev/null
-
 curl -s -c "$CLINIC" -X POST "$BASE/auth/v1/dev-login" \
     -H "Content-Type: application/json" \
     -d "{\"user_id\":$uAdmin}" >/dev/null

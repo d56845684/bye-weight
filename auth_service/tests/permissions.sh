@@ -20,18 +20,21 @@ PATIENT_COOKIE=$(mktemp)
 
 # 硬刪 + cookie 清除：trap 保證失敗 / ctrl-c 都會跑
 cleanup() {
-    # 拿 user_id 做 Redis revoke key 清除（DELETE user 前抓，刪完 id 就沒了）
+    # 透過 auth_identities join 拿 user_id（line_uuid 已 refactor 到 identities）
     local uids
     uids=$(docker compose -f docker-compose.dev.yml exec -T postgres \
         psql -U postgres -d auth_db -qAtc \
-        "SELECT id FROM users WHERE line_uuid IN ('perm-test-admin','perm-test-patient');" 2>/dev/null)
+        "SELECT user_id FROM auth_identities WHERE provider='line' AND subject IN ('perm-test-admin','perm-test-patient');" 2>/dev/null)
     for uid in $uids; do
         docker compose -f docker-compose.dev.yml exec -T redis redis-cli DEL "auth:user_revoke:$uid" >/dev/null 2>&1 || true
     done
 
-    # 硬刪測資：users → tenant_services / tenant_roles → tenants
+    # 硬刪測資：先刪 auth_identities，再刪 users、tenant_services / tenant_roles / tenants
     docker compose -f docker-compose.dev.yml exec -T postgres psql -U postgres -d auth_db -qAtc "
-        DELETE FROM users WHERE line_uuid IN ('perm-test-admin','perm-test-patient');
+        DELETE FROM users WHERE id IN (
+            SELECT user_id FROM auth_identities
+            WHERE provider='line' AND subject IN ('perm-test-admin','perm-test-patient')
+        );
         DELETE FROM tenant_services WHERE tenant_id = (SELECT id FROM tenants WHERE slug='perm-test-tenant');
         DELETE FROM tenant_roles    WHERE tenant_id = (SELECT id FROM tenants WHERE slug='perm-test-tenant');
         DELETE FROM tenants WHERE slug='perm-test-tenant';
@@ -92,10 +95,22 @@ status() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
 
 echo "── seed 三種角色的測試 user ──"
 # 確保 dev-admin 存在（migration 000003 有 seed，加保險）
+# line_uuid 已搬到 auth_identities；查詢/保險透過 identity
 psql_auth "
-INSERT INTO users (line_uuid, role_id, tenant_id, active, display_name)
-VALUES ('dev-admin', (SELECT id FROM roles WHERE name='super_admin'), 0, true, 'Dev Super Admin')
-ON CONFLICT (line_uuid) DO UPDATE SET active=true;
+DO \$\$
+DECLARE dev_uid INT;
+BEGIN
+  SELECT user_id INTO dev_uid FROM auth_identities
+  WHERE provider='line' AND subject='dev-admin' AND deleted_at IS NULL;
+  IF dev_uid IS NULL THEN
+    INSERT INTO users (role_id, tenant_id, active, display_name)
+    VALUES ((SELECT id FROM roles WHERE name='super_admin'), 0, true, 'Dev Super Admin')
+    RETURNING id INTO dev_uid;
+    INSERT INTO auth_identities (user_id, provider, subject) VALUES (dev_uid, 'line', 'dev-admin');
+  ELSE
+    UPDATE users SET active=true WHERE id=dev_uid;
+  END IF;
+END\$\$;
 " >/dev/null
 
 # 確保 Phase 1 測試 tenant 存在（slug=perm-test-tenant），並是 active
@@ -120,19 +135,35 @@ SELECT $TENANT_ID, r.id FROM roles r WHERE r.name IN ('admin','patient')
 ON CONFLICT DO NOTHING;
 " >/dev/null
 
-# seed 一個 clinic-admin 與一個 patient
-psql_auth "
-INSERT INTO users (line_uuid, role_id, tenant_id, active, display_name)
-VALUES ('perm-test-admin', (SELECT id FROM roles WHERE name='admin'), $TENANT_ID, true, 'Perm Admin')
-ON CONFLICT (line_uuid) DO UPDATE SET active=true, tenant_id=$TENANT_ID, role_id=(SELECT id FROM roles WHERE name='admin');
-INSERT INTO users (line_uuid, role_id, tenant_id, active, display_name)
-VALUES ('perm-test-patient', (SELECT id FROM roles WHERE name='patient'), $TENANT_ID, true, 'Perm Patient')
-ON CONFLICT (line_uuid) DO UPDATE SET active=true, tenant_id=$TENANT_ID, role_id=(SELECT id FROM roles WHERE name='patient');
+# seed 一個 clinic-admin 與一個 patient。identity 在 auth_identities；
+# user row 本身用 DO block upsert，重跑測試不會積累殘留。
+seed_user() {
+    local line_subject="$1" role="$2" display="$3"
+    psql_auth "
+DO \$\$
+DECLARE uid INT;
+BEGIN
+  SELECT user_id INTO uid FROM auth_identities
+  WHERE provider='line' AND subject='$line_subject' AND deleted_at IS NULL;
+  IF uid IS NULL THEN
+    INSERT INTO users (role_id, tenant_id, active, display_name)
+    VALUES ((SELECT id FROM roles WHERE name='$role'), $TENANT_ID, true, '$display')
+    RETURNING id INTO uid;
+    INSERT INTO auth_identities (user_id, provider, subject) VALUES (uid, 'line', '$line_subject');
+  ELSE
+    UPDATE users
+    SET active=true, tenant_id=$TENANT_ID, role_id=(SELECT id FROM roles WHERE name='$role')
+    WHERE id=uid;
+  END IF;
+END\$\$;
 " >/dev/null
+}
+seed_user "perm-test-admin"   "admin"   "Perm Admin"
+seed_user "perm-test-patient" "patient" "Perm Patient"
 
 # 清掉先前測試殘留的 user_revoke（避免 dev-login 發的 token 立即失效）
 for uuid in dev-admin perm-test-admin perm-test-patient; do
-    uid=$(psql_auth "SELECT id FROM users WHERE line_uuid='$uuid';")
+    uid=$(psql_auth "SELECT user_id FROM auth_identities WHERE provider='line' AND subject='$uuid' AND deleted_at IS NULL;")
     docker compose -f docker-compose.dev.yml exec -T redis redis-cli DEL "auth:user_revoke:$uid" >/dev/null
 done
 
@@ -172,7 +203,10 @@ assert_contains "patient 含 main:patient:read" '"main:patient:read"' "$actions"
 assert_not_contains "patient 無 admin:*"      '"admin:' "$actions"
 
 echo "── 5. tenant 停用 → /me/permissions 回 401 tenant disabled ──"
+# 直接改 DB 會繞過 admin handler，因此得自己 DEL auth:tenant:active:<id> 讓 Redis 快取失效
+# （正常路徑走 PATCH /admin/tenants 會自動 Invalidate；這裡是測試為了避開 admin API 的 audit / policy 檢查）
 psql_auth "UPDATE tenants SET active=false WHERE id=$TENANT_ID;" >/dev/null
+docker compose -f docker-compose.dev.yml exec -T redis redis-cli DEL "auth:tenant:active:$TENANT_ID" >/dev/null
 code=$(status -b "$ADMIN_COOKIE" "$BASE/auth/v1/me/permissions")
 assert_eq "tenant 停用時 clinic-admin 拿不到 permissions" "401" "$code"
 code=$(status -b "$PATIENT_COOKIE" "$BASE/auth/v1/me/permissions")
@@ -182,6 +216,7 @@ assert_eq "tenant 停用不影響 super_admin (tenant_id=0)" "200" "$code"
 
 echo "── 6. 還原 tenant、清 revoke → 再次驗證能拿到 ──"
 psql_auth "UPDATE tenants SET active=true WHERE id=$TENANT_ID;" >/dev/null
+docker compose -f docker-compose.dev.yml exec -T redis redis-cli DEL "auth:tenant:active:$TENANT_ID" >/dev/null
 code=$(status -b "$ADMIN_COOKIE" "$BASE/auth/v1/me/permissions")
 assert_eq "tenant 還原後 clinic-admin 恢復" "200" "$code"
 

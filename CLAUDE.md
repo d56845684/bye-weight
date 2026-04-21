@@ -10,6 +10,33 @@
 
 ---
 
+## 本機工具鏈限制
+
+**本機沒有 Go / Python / Node runtime**，所有 build / run / test 一律透過 Docker：
+
+- **auth_service 編譯檢查**（快；`bye_go_cache` 快取 module 避免重複下載）：
+  ```bash
+  docker volume create bye_go_cache 2>/dev/null
+  docker run --rm \
+      -v bye_go_cache:/go/pkg/mod \
+      -v "$PWD/auth_service":/app -w /app \
+      golang:1.25-alpine go build ./...
+  ```
+  第一次約 2 分鐘（下載 deps），之後每次改 code 重跑幾秒內。`go test ./...` 同理。
+- **auth_service 跑起來**：
+  ```bash
+  docker compose -f docker-compose.dev.yml --profile full up -d auth_service
+  # 改 code 後：
+  docker compose -f docker-compose.dev.yml --profile full build auth_service
+  docker compose -f docker-compose.dev.yml --profile full up -d auth_service
+  ```
+- **main_service / frontend** 同理：用 `--profile full` 拉 container，或 `docker run --rm -v` 臨時跑 lint / test。
+- **只要 DB + Redis**（不跑服務）：`docker compose -f docker-compose.dev.yml up -d`（不帶 profile）。
+
+**禁止**：`go build`、`go test`、`pnpm dev`、`uvicorn` 等直接在本機呼叫 — 本機沒裝這些工具，會失敗。
+
+---
+
 ## 三個服務開發過程重點
 
 > 實作位置：`bye-weight/`（`auth_service/`、`main_service/`、`frontend/`）

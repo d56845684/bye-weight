@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,6 +8,7 @@ from database import get_db
 from deps import current_user, current_patient
 from models.patient import Patient
 from models.visit import Visit, Medication
+from schemas.visit import VisitTimelineItem
 
 router = APIRouter(prefix="/visits", tags=["visits"])
 
@@ -37,6 +40,50 @@ async def list_visits(
         }
         for v in visits
     ]
+
+
+@router.get("/me/timeline", response_model=list[VisitTimelineItem])
+async def visits_timeline(
+    user: dict = Depends(current_user),
+    patient: Patient = Depends(current_patient),
+    db: AsyncSession = Depends(get_db),
+):
+    """病患 dashboard 看診紀錄：依 next_visit_date 標記 upcoming + 距今天數。
+    排序：upcoming 先（依最近日期），其他依 visit_date desc。"""
+    stmt = (
+        select(Visit)
+        .where(
+            Visit.patient_id == patient.id,
+            Visit.tenant_id == user["tenant_id"],
+            Visit.deleted_at.is_(None),
+        )
+        .order_by(Visit.visit_date.desc())
+        .limit(100)
+    )
+    visits = (await db.execute(stmt)).scalars().all()
+
+    today = date.today()
+    items = [
+        VisitTimelineItem(
+            id=v.id,
+            visit_date=v.visit_date,
+            next_visit_date=v.next_visit_date,
+            doctor_id=v.doctor_id,
+            notes=v.notes,
+            upcoming=(v.next_visit_date is not None and v.next_visit_date >= today),
+            days_away=((v.next_visit_date - today).days
+                       if v.next_visit_date is not None and v.next_visit_date >= today else None),
+            created_at=v.created_at,
+        )
+        for v in visits
+    ]
+    # upcoming 先（最近的在最前面）；其他維持既有 visit_date desc
+    items.sort(key=lambda x: (
+        0 if x.upcoming else 1,
+        x.days_away if x.upcoming and x.days_away is not None else 0,
+        -x.visit_date.toordinal(),
+    ))
+    return items
 
 
 @router.get("/{visit_id}/medications")

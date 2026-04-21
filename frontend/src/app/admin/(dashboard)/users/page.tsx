@@ -3,17 +3,27 @@
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
+type Identity = {
+  provider: "line" | "password" | "google" | "apple" | string;
+  subject: string;
+  created_at: string;
+  last_used_at?: string | null;
+};
+
 type User = {
   id: number;
   display_name: string | null;
-  line_uuid: string | null;
-  google_email: string | null;
   role: string;
   tenant_id: number;
   tenant_slug: string;
   active: boolean;
-  auth_methods: ("line" | "password")[];
+  auth_methods: string[];
+  identities: Identity[];
 };
+
+function identityByProvider(u: User, provider: string): Identity | undefined {
+  return u.identities.find((i) => i.provider === provider);
+}
 
 type Tenant = {
   id: number;
@@ -159,6 +169,18 @@ export default function AdminUsersPage() {
     setBinding(await res.json());
   };
 
+  const regenerateGoogle = async (id: number) => {
+    const res = await fetch(`/auth/v1/admin/users/${id}/google-binding-token`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      alert(`產生失敗：${await res.text()}`);
+      return;
+    }
+    setBinding(await res.json());
+  };
+
   const unbind = async (u: User) => {
     const label = u.display_name || `#${u.id}`;
     if (!confirm(`解除 ${label} 的 LINE 綁定後，其手機上的 session 會立即失效且帳號被停用。\n要重新啟用需重發綁定連結。確定？`))
@@ -176,7 +198,8 @@ export default function AdminUsersPage() {
 
   const setPassword = async (u: User) => {
     const label = u.display_name || `#${u.id}`;
-    const email = prompt(`設定「${label}」的登入 email：`, u.google_email ?? "");
+    const existing = identityByProvider(u, "password");
+    const email = prompt(`設定「${label}」的登入 email：`, existing?.subject ?? "");
     if (!email) return;
     const password = prompt("初始密碼（至少 8 碼）：");
     if (!password || password.length < 8) {
@@ -268,34 +291,15 @@ export default function AdminUsersPage() {
                     />
                   </td>
                   <td className="p-3">
-                    {u.auth_methods.length === 0 ? (
+                    {u.identities.length === 0 ? (
                       <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
                         待綁定
                       </span>
                     ) : (
-                      <div className="flex flex-col gap-1">
-                        {u.auth_methods.includes("line") && (
-                          <div className="flex flex-col">
-                            <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded w-fit">
-                              LINE
-                            </span>
-                            <button
-                              onClick={() => navigator.clipboard.writeText(u.line_uuid ?? "")}
-                              title={`點擊複製：${u.line_uuid}`}
-                              className="text-xs font-mono text-gray-500 hover:text-red-700 text-left"
-                            >
-                              {u.line_uuid ? `${u.line_uuid.slice(0, 6)}…${u.line_uuid.slice(-6)}` : ""}
-                            </button>
-                          </div>
-                        )}
-                        {u.auth_methods.includes("password") && (
-                          <div className="flex flex-col">
-                            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded w-fit">
-                              密碼
-                            </span>
-                            <span className="text-xs text-gray-500">{u.google_email}</span>
-                          </div>
-                        )}
+                      <div className="flex flex-col gap-1.5">
+                        {u.identities.map((i) => (
+                          <IdentityBadge key={i.provider} identity={i} />
+                        ))}
                       </div>
                     )}
                   </td>
@@ -343,7 +347,7 @@ export default function AdminUsersPage() {
                         onClick={() => regenerate(u.id)}
                         className="text-xs text-red-700 hover:underline"
                       >
-                        產生綁定連結
+                        LINE 邀請
                       </button>
                     )}
                     {u.auth_methods.includes("line") && (
@@ -351,7 +355,15 @@ export default function AdminUsersPage() {
                         onClick={() => unbind(u)}
                         className="text-xs text-red-700 hover:underline"
                       >
-                        解除綁定
+                        解除 LINE
+                      </button>
+                    )}
+                    {!u.auth_methods.includes("google") && (
+                      <button
+                        onClick={() => regenerateGoogle(u.id)}
+                        className="text-xs text-red-700 hover:underline"
+                      >
+                        Google 邀請
                       </button>
                     )}
                     <button
@@ -511,6 +523,47 @@ export default function AdminUsersPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+const PROVIDER_META: Record<string, { label: string; color: string }> = {
+  line:     { label: "LINE",   color: "bg-green-100 text-green-700" },
+  password: { label: "密碼",   color: "bg-blue-100 text-blue-700" },
+  google:   { label: "Google", color: "bg-red-100 text-red-700" },
+  apple:    { label: "Apple",  color: "bg-gray-100 text-gray-700" },
+};
+
+function IdentityBadge({ identity }: { identity: Identity }) {
+  const meta = PROVIDER_META[identity.provider] ?? {
+    label: identity.provider,
+    color: "bg-gray-100 text-gray-700",
+  };
+
+  const displayedSubject = (() => {
+    const s = identity.subject;
+    // LINE UUID 很長，中間 mask；其他 provider（email / sub）直接顯示
+    if (identity.provider === "line" && s.length > 20) {
+      return `${s.slice(0, 6)}…${s.slice(-6)}`;
+    }
+    return s;
+  })();
+
+  const bindDate = new Date(identity.created_at).toLocaleDateString("zh-TW");
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className={`text-xs ${meta.color} px-2 py-0.5 rounded w-fit`}>
+        {meta.label}
+      </span>
+      <button
+        onClick={() => navigator.clipboard.writeText(identity.subject)}
+        title={`點擊複製：${identity.subject}`}
+        className="text-xs font-mono text-gray-500 hover:text-red-700 text-left"
+      >
+        {displayedSubject}
+      </button>
+      <span className="text-[10px] text-gray-400">綁於 {bindDate}</span>
     </div>
   );
 }
