@@ -55,6 +55,7 @@ func main() {
 	huma.Post(api, "/auth/refresh", h.HumaRefresh)
 	huma.Post(api, "/auth/password-login", h.HumaPasswordLogin)
 	huma.Post(api, "/auth/google", h.HumaGoogleLogin)
+	huma.Post(api, "/auth/google-bind", h.HumaGoogleBind)
 
 	// Internal service-to-service endpoints（shared secret 保護；不走 user JWT）
 	huma.Get(api, "/auth/internal/users/by-line-uuid", h.HumaResolveSenderByLineUUID)
@@ -66,6 +67,7 @@ func main() {
 	huma.Patch(api, "/auth/admin/users/{id}", h.HumaUpdateUser)
 	huma.Delete(api, "/auth/admin/users/{id}", h.HumaDeleteUser)
 	huma.Post(api, "/auth/admin/users/{id}/binding-token", h.HumaRegenerateBindToken)
+	huma.Post(api, "/auth/admin/users/{id}/google-binding-token", h.HumaRegenerateGoogleBindToken)
 	huma.Post(api, "/auth/admin/users/{id}/unbind", h.HumaUnbindUser)
 	huma.Post(api, "/auth/admin/users/{id}/password", h.HumaSetUserPassword)
 

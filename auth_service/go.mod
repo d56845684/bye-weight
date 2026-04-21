@@ -11,4 +11,5 @@ require (
 	github.com/jackc/pgx/v5             v5.5.5
 	github.com/redis/go-redis/v9        v9.5.1
 	golang.org/x/crypto                 v0.21.0
+	google.golang.org/api               v0.176.0
 )

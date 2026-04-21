@@ -25,11 +25,10 @@ ADMIN_COOKIE=$(mktemp)
 # 硬刪測資：腳本創的兩個 tenant / user / 兩個 policies 在 EXIT 時一律清掉。
 # restore_clinic_admin 會在下方實際定義後替換進 trap。
 initial_cleanup() {
-    # Redis revoke key（刪 user 前抓 id）
     local uids
     uids=$(docker compose -f docker-compose.dev.yml exec -T postgres \
         psql -U postgres -d auth_db -qAtc \
-        "SELECT id FROM users WHERE line_uuid='pts-admin-a';" 2>/dev/null)
+        "SELECT user_id FROM auth_identities WHERE provider='line' AND subject='pts-admin-a';" 2>/dev/null)
     for uid in $uids; do
         docker compose -f docker-compose.dev.yml exec -T redis redis-cli DEL "auth:user_revoke:$uid" >/dev/null 2>&1 || true
     done
@@ -37,7 +36,9 @@ initial_cleanup() {
     docker compose -f docker-compose.dev.yml exec -T postgres psql -U postgres -d auth_db -qAtc "
         DELETE FROM role_policies WHERE policy_id IN (SELECT id FROM policies WHERE name IN ('pts-a-policy','pts-b-policy'));
         DELETE FROM policies WHERE name IN ('pts-a-policy','pts-b-policy');
-        DELETE FROM users WHERE line_uuid='pts-admin-a';
+        DELETE FROM users WHERE id IN (
+            SELECT user_id FROM auth_identities WHERE provider='line' AND subject='pts-admin-a'
+        );
         DELETE FROM tenant_services WHERE tenant_id IN (SELECT id FROM tenants WHERE slug IN ('pts-tenant-a','pts-tenant-b'));
         DELETE FROM tenant_roles    WHERE tenant_id IN (SELECT id FROM tenants WHERE slug IN ('pts-tenant-a','pts-tenant-b'));
         DELETE FROM tenants WHERE slug IN ('pts-tenant-a','pts-tenant-b');
@@ -104,14 +105,26 @@ ON CONFLICT DO NOTHING;
 " >/dev/null
 
 psql_auth "
-INSERT INTO users (line_uuid, role_id, tenant_id, active, display_name)
-VALUES ('pts-admin-a', (SELECT id FROM roles WHERE name='admin'), $TENANT_A, true, 'PTS Admin A')
-ON CONFLICT (line_uuid) DO UPDATE SET active=true, tenant_id=$TENANT_A,
-    role_id=(SELECT id FROM roles WHERE name='admin');
+DO \$\$
+DECLARE uid INT;
+BEGIN
+  SELECT user_id INTO uid FROM auth_identities
+  WHERE provider='line' AND subject='pts-admin-a' AND deleted_at IS NULL;
+  IF uid IS NULL THEN
+    INSERT INTO users (role_id, tenant_id, active, display_name)
+    VALUES ((SELECT id FROM roles WHERE name='admin'), $TENANT_A, true, 'PTS Admin A')
+    RETURNING id INTO uid;
+    INSERT INTO auth_identities (user_id, provider, subject) VALUES (uid, 'line', 'pts-admin-a');
+  ELSE
+    UPDATE users
+    SET active=true, tenant_id=$TENANT_A, role_id=(SELECT id FROM roles WHERE name='admin')
+    WHERE id=uid;
+  END IF;
+END\$\$;
 " >/dev/null
 
 # 清 revoke key 避免 dev-login 給出的 token 被舊紀錄作廢
-UID_A=$(psql_auth "SELECT id FROM users WHERE line_uuid='pts-admin-a';")
+UID_A=$(psql_auth "SELECT user_id FROM auth_identities WHERE provider='line' AND subject='pts-admin-a' AND deleted_at IS NULL;")
 for uid in 1 "$UID_A"; do
     docker compose -f docker-compose.dev.yml exec -T redis redis-cli DEL "auth:user_revoke:$uid" >/dev/null
 done

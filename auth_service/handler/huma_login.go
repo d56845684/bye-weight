@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/api/idtoken"
 
 	"auth_service/token"
 )
@@ -169,8 +170,8 @@ func (h *Handler) HumaLineBind(ctx context.Context, in *LineBindInput) (*LineBin
 		// Token 已被 consume。若 caller 的 LINE UUID 就是之前被這顆 token 綁好的
 		// active user，當作「同一人重入」處理（常見於首次 line-bind 成功但
 		// /patients/register 前斷線，用戶回來再點 invite link）→ 直接發新 session
-		// 接續流程，不回 410 讓前端要多做 fallback。這裡依賴 users.line_uuid 唯一，
-		// 所以不會被別的 LINE UUID 重用掉這個 token 的效果。
+		// 接續流程，不回 410 讓前端要多做 fallback。這裡依賴 auth_identities 的
+		// (provider, subject) 唯一，所以同一個 LINE UUID 不會被別的 token 盜用。
 		if user, lookupErr := h.findUserByLineUUID(ctx, profile.UserID); lookupErr == nil && user != nil {
 			access, refresh, issueErr := h.issueSessionTokens(user)
 			if issueErr != nil {
@@ -199,10 +200,26 @@ func (h *Handler) HumaLineBind(ctx context.Context, in *LineBindInput) (*LineBin
 
 	// unbind → 重發 binding-token → 重綁 的循環需要把 active 回復，否則即使綁完
 	// 下次 LIFF 登入仍被 active=false 擋。
-	if _, err := h.engine.DB().Exec(ctx,
-		`UPDATE users SET line_uuid = $1, active = true WHERE id = $2`,
-		profile.UserID, userID); err != nil {
+	// identity 用 UPSERT pattern：如有舊的 soft-deleted line identity 就 revive；
+	// 沒有就 insert。partial unique (user_id, provider) WHERE deleted_at IS NULL
+	// 保證同一時刻只有一筆 live。
+	tx, err := h.engine.DB().Begin(ctx)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("tx begin failed: " + err.Error())
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO auth_identities (user_id, provider, subject, last_used_at)
+		 VALUES ($1, 'line', $2, NOW())`,
+		userID, profile.UserID); err != nil {
 		return nil, huma.Error500InternalServerError("bind failed: " + err.Error())
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE users SET active = true WHERE id = $1`, userID); err != nil {
+		return nil, huma.Error500InternalServerError("activate failed: " + err.Error())
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, huma.Error500InternalServerError("tx commit failed: " + err.Error())
 	}
 	h.rdb.Del(ctx, "bind:"+in.Body.BindingToken)
 
@@ -352,7 +369,7 @@ func (h *Handler) HumaRefresh(ctx context.Context, in *RefreshInput) (*RefreshOu
 type PasswordLoginInput struct {
 	requestMeta
 	Body struct {
-		Email    string `json:"email"    doc:"使用者 email（存在 users.google_email 欄位）"`
+		Email    string `json:"email"    doc:"使用者 email（存 auth_identities provider=password 的 subject）"`
 		Password string `json:"password" doc:"明文密碼，server 端 bcrypt 比對"`
 	}
 }
@@ -426,14 +443,218 @@ func (h *Handler) HumaDevLogin(ctx context.Context, in *DevLoginInput) (*DevLogi
 	return out, nil
 }
 
-// ===== GoogleLogin：POST /auth/google（stub）=====
+// ===== Google SSO =====
+//
+// 兩支 endpoint，對稱於 LINE：
+//   POST /auth/google         一般登入：已綁 Google 的 user，帶 id_token 來換 session
+//   POST /auth/google-bind    首次綁定：admin 產 invite token → 使用者走 Google
+//                             OAuth 拿 id_token → 同時帶 token 回來把 Google sub
+//                             跟對應 auth_user 寫進 auth_identities
+//
+// Provisioning 模型（方案 B）：admin 透過 POST /auth/admin/users/{id}/google-binding-token
+// 產一次性 token 存 Redis `bind:google:{token}` → user_id，TTL 7 天。
+// user 點 invite URL 登入後，backend 驗 id_token 拿 sub → 依 token 找到目標 user →
+// INSERT identity(provider=google, subject=sub) + consume token。
+//
+// 不允許自註冊：若 /auth/google 查不到 identity，直接 401 要求先向 admin 取綁定連結。
 
-type GoogleLoginOutput struct {
+type googleProfile struct {
+	Sub   string
+	Email string
+	Name  string
+}
+
+// verifyGoogleIDToken：用 google.golang.org/api/idtoken 驗簽 + 驗 audience。
+// audience = GOOGLE_CLIENT_ID；空字串視為未設定，fail-close 回 401。
+func (h *Handler) verifyGoogleIDToken(ctx context.Context, token string) (*googleProfile, error) {
+	if h.cfg.GoogleClientID == "" {
+		return nil, errors.New("google sso not configured")
+	}
+	payload, err := idtoken.Validate(ctx, token, h.cfg.GoogleClientID)
+	if err != nil {
+		return nil, err
+	}
+	p := &googleProfile{Sub: payload.Subject}
+	if v, ok := payload.Claims["email"].(string); ok {
+		p.Email = v
+	}
+	if v, ok := payload.Claims["name"].(string); ok {
+		p.Name = v
+	}
+	return p, nil
+}
+
+// ===== GoogleLogin：POST /auth/google =====
+
+type GoogleLoginInput struct {
+	requestMeta
 	Body struct {
-		Status string `json:"status"`
+		Credential string `json:"credential" doc:"Google id_token（前端 Google Identity Services 拿到的 JWT）"`
 	}
 }
 
-func (h *Handler) HumaGoogleLogin(ctx context.Context, _ *struct{}) (*GoogleLoginOutput, error) {
-	return nil, huma.NewError(http.StatusNotImplemented, "not implemented")
+func (h *Handler) HumaGoogleLogin(ctx context.Context, in *GoogleLoginInput) (*authSessionOutput, error) {
+	if in.Body.Credential == "" {
+		return nil, huma.Error400BadRequest("credential required")
+	}
+	profile, err := h.verifyGoogleIDToken(ctx, in.Body.Credential)
+	if err != nil {
+		return nil, huma.Error401Unauthorized("invalid google token")
+	}
+
+	var u userRow
+	err = h.engine.DB().QueryRow(ctx, `
+		SELECT u.id, r.name, u.tenant_id
+		FROM users u
+		JOIN roles r ON u.role_id = r.id
+		JOIN auth_identities i ON i.user_id = u.id
+		WHERE i.provider = 'google'
+		  AND i.subject = $1
+		  AND i.deleted_at IS NULL
+		  AND u.active = true
+		  AND u.deleted_at IS NULL
+	`, profile.Sub).Scan(&u.ID, &u.RoleName, &u.TenantID)
+	if err != nil {
+		// 沒綁過 → 要求先取得 admin 發的綁定連結；不自動註冊
+		return nil, huma.Error401Unauthorized("google account not bound; contact admin for invite")
+	}
+
+	// 更新 last_used_at（best-effort，失敗不擋登入）
+	_, _ = h.engine.DB().Exec(ctx, `
+		UPDATE auth_identities SET last_used_at = NOW()
+		WHERE user_id = $1 AND provider = 'google' AND deleted_at IS NULL`, u.ID)
+
+	access, refresh, err := h.issueSessionTokens(&u)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("token issue failed")
+	}
+	_ = logLoginEvent(ctx, h.engine.DB(), u.ID,
+		pickClientIP(in.XForwardedFor, in.XRealIP, ""), in.UserAgent, "google")
+
+	out := &authSessionOutput{SetCookie: h.sessionCookies(access, refresh)}
+	out.Body.UserID = u.ID
+	out.Body.Role = u.RoleName
+	out.Body.TenantID = u.TenantID
+	return out, nil
+}
+
+// ===== GoogleBind：POST /auth/google-bind =====
+
+type GoogleBindInput struct {
+	requestMeta
+	Body struct {
+		Credential   string `json:"credential"    doc:"Google id_token"`
+		BindingToken string `json:"binding_token" doc:"admin 發的一次性綁定 token"`
+	}
+}
+
+func (h *Handler) HumaGoogleBind(ctx context.Context, in *GoogleBindInput) (*LineBindOutput, error) {
+	if in.Body.Credential == "" || in.Body.BindingToken == "" {
+		return nil, huma.Error400BadRequest("credential and binding_token required")
+	}
+	profile, err := h.verifyGoogleIDToken(ctx, in.Body.Credential)
+	if err != nil {
+		return nil, huma.Error401Unauthorized("invalid google token")
+	}
+
+	userIDStr, err := h.rdb.Get(ctx, "bind:google:"+in.Body.BindingToken).Result()
+	if errors.Is(err, redis.Nil) {
+		// Token 已 consume，但如果 user 以同一個 Google 帳號重入，直接放行發 session
+		// 不回 410，對稱 LineBind 的冪等處理。
+		if user, lookupErr := h.findUserByGoogleSub(ctx, profile.Sub); lookupErr == nil && user != nil {
+			access, refresh, issueErr := h.issueSessionTokens(user)
+			if issueErr != nil {
+				return nil, huma.Error500InternalServerError("token issue failed")
+			}
+			_ = logLoginEvent(ctx, h.engine.DB(), user.ID,
+				pickClientIP(in.XForwardedFor, in.XRealIP, ""), in.UserAgent, "google_bind_resume")
+			out := &LineBindOutput{SetCookie: h.sessionCookies(access, refresh)}
+			out.Body.UserID = user.ID
+			out.Body.Role = user.RoleName
+			return out, nil
+		}
+		return nil, huma.Error410Gone("binding token expired or invalid")
+	}
+	if err != nil {
+		return nil, huma.Error500InternalServerError("token lookup failed")
+	}
+	userID, err := strconv.Atoi(userIDStr)
+	if err != nil || userID <= 0 {
+		return nil, huma.Error500InternalServerError("invalid stored user_id")
+	}
+
+	// 拒絕：此 user 已綁 google；此 Google sub 已綁別人
+	var userHasGoogle, subTakenByOther bool
+	if err := h.engine.DB().QueryRow(ctx, `
+		SELECT
+		    EXISTS(SELECT 1 FROM auth_identities
+		           WHERE user_id = $1 AND provider = 'google' AND deleted_at IS NULL),
+		    EXISTS(SELECT 1 FROM auth_identities
+		           WHERE provider = 'google' AND subject = $2 AND deleted_at IS NULL
+		             AND user_id <> $1)
+	`, userID, profile.Sub).Scan(&userHasGoogle, &subTakenByOther); err != nil {
+		return nil, huma.Error500InternalServerError("conflict check failed")
+	}
+	if userHasGoogle {
+		return nil, huma.Error409Conflict("user already bound to google")
+	}
+	if subTakenByOther {
+		return nil, huma.Error409Conflict("this google account is already bound to another user")
+	}
+
+	tx, err := h.engine.DB().Begin(ctx)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("tx begin failed")
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO auth_identities (user_id, provider, subject, metadata, last_used_at)
+		VALUES ($1, 'google', $2,
+		        jsonb_build_object('email', $3::text, 'name', $4::text),
+		        NOW())`,
+		userID, profile.Sub, profile.Email, profile.Name); err != nil {
+		return nil, huma.Error500InternalServerError("bind failed: " + err.Error())
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET active = true WHERE id = $1`, userID); err != nil {
+		return nil, huma.Error500InternalServerError("activate failed: " + err.Error())
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, huma.Error500InternalServerError("tx commit failed: " + err.Error())
+	}
+	h.rdb.Del(ctx, "bind:google:"+in.Body.BindingToken)
+
+	user, err := h.findUserByGoogleSub(ctx, profile.Sub)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("post-bind lookup failed")
+	}
+	access, refresh, err := h.issueSessionTokens(user)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("token issue failed")
+	}
+	_ = logLoginEvent(ctx, h.engine.DB(), user.ID,
+		pickClientIP(in.XForwardedFor, in.XRealIP, ""), in.UserAgent, "google_bind")
+
+	out := &LineBindOutput{SetCookie: h.sessionCookies(access, refresh)}
+	out.Body.UserID = user.ID
+	out.Body.Role = user.RoleName
+	return out, nil
+}
+
+func (h *Handler) findUserByGoogleSub(ctx context.Context, sub string) (*userRow, error) {
+	var u userRow
+	err := h.engine.DB().QueryRow(ctx, `
+		SELECT u.id, r.name, u.tenant_id
+		FROM users u
+		JOIN roles r ON u.role_id = r.id
+		JOIN auth_identities i ON i.user_id = u.id
+		WHERE i.provider = 'google'
+		  AND i.subject = $1
+		  AND i.deleted_at IS NULL
+		  AND u.active = true
+		  AND u.deleted_at IS NULL
+	`, sub).Scan(&u.ID, &u.RoleName, &u.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
 }

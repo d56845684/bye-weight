@@ -13,17 +13,24 @@ import (
 const bindTokenTTL = 7 * 24 * time.Hour
 
 type adminUserRow struct {
-	ID          int      `json:"id"`
-	DisplayName *string  `json:"display_name"`
-	LineUUID    *string  `json:"line_uuid"`
-	GoogleEmail *string  `json:"google_email"`
-	Role        string   `json:"role"`
-	TenantID    int      `json:"tenant_id"`
-	TenantSlug  string   `json:"tenant_slug"`
-	Active      bool     `json:"active"`
-	// AuthMethods：該 user 有哪些登入路徑。空陣列 = pending（admin 尚未發綁定
-	// 或密碼）。LINE 與密碼彼此獨立，可以同時存在。
-	AuthMethods []string `json:"auth_methods"`
+	ID          int     `json:"id"`
+	DisplayName *string `json:"display_name"`
+	Role        string  `json:"role"`
+	TenantID    int     `json:"tenant_id"`
+	TenantSlug  string  `json:"tenant_slug"`
+	Active      bool    `json:"active"`
+	// AuthMethods：該 user 有哪些登入路徑（line / password / google / apple ...）。
+	// 從 auth_identities 表 aggregate；空陣列 = pending（admin 尚未發綁定或設密碼）。
+	// 保留此欄位（向後相容）+ 同步吐 Identities（更細的資訊：subject / 綁定時間）。
+	AuthMethods []string           `json:"auth_methods"`
+	Identities  []adminUserIdentity `json:"identities"`
+}
+
+type adminUserIdentity struct {
+	Provider   string     `json:"provider"`
+	Subject    string     `json:"subject"`     // LINE UUID / email / google sub / apple sub
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 }
 
 type createUserResponse struct {

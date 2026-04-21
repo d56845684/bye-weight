@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { humaMessage } from "@/lib/api";
+import { GoogleSignInButton } from "@/components/GoogleSignInButton";
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -10,6 +11,35 @@ export default function AdminLoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const googleSignIn = async (credential: string) => {
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await fetch("/auth/v1/google", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ credential }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        if (res.status === 401) {
+          throw new Error("此 Google 帳號尚未綁定本系統，請向管理員索取綁定連結");
+        }
+        throw new Error(humaMessage(text) || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.role !== "super_admin" && data.role !== "admin") {
+        throw new Error(`此帳號角色為 ${data.role}，無權登入後台`);
+      }
+      router.push(data.role === "super_admin" ? "/admin/tenants" : "/admin/patients");
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +112,14 @@ export default function AdminLoginPage() {
         >
           {loading ? "登入中…" : "登入"}
         </button>
+
+        <div className="flex items-center gap-3 pt-2">
+          <div className="flex-1 border-t" />
+          <span className="text-xs text-gray-400">或</span>
+          <div className="flex-1 border-t" />
+        </div>
+
+        <GoogleSignInButton onCredential={googleSignIn} />
 
         <div className="text-xs text-gray-400 text-center pt-2 border-t">
           預設測試帳號：admin@dev.local / admin123（僅開發環境）

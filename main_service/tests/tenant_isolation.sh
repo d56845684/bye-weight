@@ -87,10 +87,6 @@ uAdmB=$(curl -s -b "$SUPER_COOKIE" -X POST "$BASE/auth/v1/admin/users" \
     -d "{\"display_name\":\"iso-adm-b\",\"role\":\"admin\",\"tenant_id\":$tB}" | j "['user_id']")
 echo "  admin A user_id=$uAdmA, admin B user_id=$uAdmB"
 
-# dev-login 需要 line_uuid，所以直接在 auth_db 補一個 placeholder uuid
-psql_auth "UPDATE users SET line_uuid='iso-adm-a-$uAdmA' WHERE id=$uAdmA;" >/dev/null
-psql_auth "UPDATE users SET line_uuid='iso-adm-b-$uAdmB' WHERE id=$uAdmB;" >/dev/null
-
 # ── 在 app_db 各塞一個 patient row 屬於對應 tenant ──
 echo "── app_db 建立兩筆 patient ──"
 pA=$(psql_app "INSERT INTO patients (name, birth_date, tenant_id) VALUES ('Iso A', '1990-01-01', $tA) RETURNING id;")
