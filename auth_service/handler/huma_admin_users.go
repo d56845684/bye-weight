@@ -366,6 +366,9 @@ func (h *Handler) HumaUpdateUser(ctx context.Context, in *UpdateUserInput) (*upd
 	if req.Role != "" || req.TenantID != nil || req.Active != nil {
 		_ = token.RevokeUser(ctx, h.rdb, in.ID, h.cfg.RefreshTokenExpire)
 	}
+	if req.Active != nil {
+		_ = token.InvalidateUserActive(ctx, h.rdb, in.ID)
+	}
 	out := &updateStatusOut{}
 	out.Body.Status = "updated"
 	out.Body.ID = in.ID
@@ -416,6 +419,7 @@ func (h *Handler) HumaUnbindUser(ctx context.Context, in *UnbindUserInput) (*unb
 		return nil, huma.Error500InternalServerError("unbind failed: " + err.Error())
 	}
 	_ = token.RevokeUser(ctx, h.rdb, in.ID, h.cfg.RefreshTokenExpire)
+	_ = token.InvalidateUserActive(ctx, h.rdb, in.ID)
 
 	out := &unbindUserOut{}
 	out.Body.Status = "unbound"
@@ -484,6 +488,7 @@ func (h *Handler) HumaDeleteUser(ctx context.Context, in *DeleteUserInput) (*del
 		return nil, huma.Error500InternalServerError("delete failed: " + err.Error())
 	}
 	_ = token.RevokeUser(ctx, h.rdb, in.ID, h.cfg.RefreshTokenExpire)
+	_ = token.InvalidateUserActive(ctx, h.rdb, in.ID)
 
 	out := &deleteUserOut{}
 	out.Body.Status = "deleted"

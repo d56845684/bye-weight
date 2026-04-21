@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"auth_service/token"
+
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
 )
@@ -199,6 +201,9 @@ func (h *Handler) HumaUpdateTenant(ctx context.Context, in *UpdateTenantInput) (
 	if err != nil {
 		return nil, huma.Error400BadRequest(err.Error())
 	}
+	if in.Body.Active != nil {
+		_ = token.InvalidateTenantActive(ctx, h.rdb, in.ID)
+	}
 	out := &simpleStatusOut{}
 	out.Body.Status = "updated"
 	out.Body.ID = in.ID
@@ -223,6 +228,7 @@ func (h *Handler) HumaDeleteTenant(ctx context.Context, in *DeleteTenantInput) (
 	if res.RowsAffected() == 0 {
 		return nil, huma.Error404NotFound("tenant not found")
 	}
+	_ = token.InvalidateTenantActive(ctx, h.rdb, in.ID)
 	out := &simpleStatusOut{}
 	out.Body.Status = "deactivated"
 	out.Body.ID = in.ID

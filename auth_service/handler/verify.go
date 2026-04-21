@@ -25,11 +25,14 @@ func (h *Handler) verifySession(ctx context.Context, claims *token.Claims) (int,
 		return http.StatusUnauthorized, errors.New("token revoked")
 	}
 
-	// 確認使用者仍啟用（後台將 active=false 後應立即生效，不等 JWT 過期）
-	var userActive bool
-	if err := h.engine.DB().QueryRow(ctx,
-		`SELECT active FROM users WHERE id = $1`, claims.UserID).Scan(&userActive); err != nil {
-		return http.StatusUnauthorized, errors.New("user not found")
+	// 確認使用者仍啟用（後台將 active=false 後應立即生效，不等 JWT 過期）。
+	// Redis 快取優先，miss 才打 DB；admin 切 active 時會 Invalidate 立即失效。
+	userActive, err := token.IsUserActive(ctx, h.rdb, h.engine.DB(), claims.UserID)
+	if err != nil {
+		if errors.Is(err, token.ErrNotFound) {
+			return http.StatusUnauthorized, errors.New("user not found")
+		}
+		return http.StatusServiceUnavailable, errors.New("service unavailable")
 	}
 	if !userActive {
 		return http.StatusUnauthorized, errors.New("account disabled")
@@ -38,10 +41,12 @@ func (h *Handler) verifySession(ctx context.Context, claims *token.Claims) (int,
 	// Tenant 停用 → 該租戶底下所有現役 session 立即擋下。
 	// 系統 tenant（id=0，super_admin 專用）略過，避免誤操作鎖死後台。
 	if claims.TenantID != 0 {
-		var tenantActive bool
-		if err := h.engine.DB().QueryRow(ctx,
-			`SELECT active FROM tenants WHERE id = $1`, claims.TenantID).Scan(&tenantActive); err != nil {
-			return http.StatusUnauthorized, errors.New("tenant not found")
+		tenantActive, err := token.IsTenantActive(ctx, h.rdb, h.engine.DB(), claims.TenantID)
+		if err != nil {
+			if errors.Is(err, token.ErrNotFound) {
+				return http.StatusUnauthorized, errors.New("tenant not found")
+			}
+			return http.StatusServiceUnavailable, errors.New("service unavailable")
 		}
 		if !tenantActive {
 			return http.StatusUnauthorized, errors.New("tenant disabled")

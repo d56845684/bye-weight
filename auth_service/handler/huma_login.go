@@ -222,6 +222,7 @@ func (h *Handler) HumaLineBind(ctx context.Context, in *LineBindInput) (*LineBin
 		return nil, huma.Error500InternalServerError("tx commit failed: " + err.Error())
 	}
 	h.rdb.Del(ctx, "bind:"+in.Body.BindingToken)
+	_ = token.InvalidateUserActive(ctx, h.rdb, userID)
 
 	user, err := h.findUserByLineUUID(ctx, profile.UserID)
 	if err != nil {
@@ -622,6 +623,7 @@ func (h *Handler) HumaGoogleBind(ctx context.Context, in *GoogleBindInput) (*Lin
 		return nil, huma.Error500InternalServerError("tx commit failed: " + err.Error())
 	}
 	h.rdb.Del(ctx, "bind:google:"+in.Body.BindingToken)
+	_ = token.InvalidateUserActive(ctx, h.rdb, userID)
 
 	user, err := h.findUserByGoogleSub(ctx, profile.Sub)
 	if err != nil {

@@ -203,7 +203,10 @@ assert_contains "patient 含 main:patient:read" '"main:patient:read"' "$actions"
 assert_not_contains "patient 無 admin:*"      '"admin:' "$actions"
 
 echo "── 5. tenant 停用 → /me/permissions 回 401 tenant disabled ──"
+# 直接改 DB 會繞過 admin handler，因此得自己 DEL auth:tenant:active:<id> 讓 Redis 快取失效
+# （正常路徑走 PATCH /admin/tenants 會自動 Invalidate；這裡是測試為了避開 admin API 的 audit / policy 檢查）
 psql_auth "UPDATE tenants SET active=false WHERE id=$TENANT_ID;" >/dev/null
+docker compose -f docker-compose.dev.yml exec -T redis redis-cli DEL "auth:tenant:active:$TENANT_ID" >/dev/null
 code=$(status -b "$ADMIN_COOKIE" "$BASE/auth/v1/me/permissions")
 assert_eq "tenant 停用時 clinic-admin 拿不到 permissions" "401" "$code"
 code=$(status -b "$PATIENT_COOKIE" "$BASE/auth/v1/me/permissions")
@@ -213,6 +216,7 @@ assert_eq "tenant 停用不影響 super_admin (tenant_id=0)" "200" "$code"
 
 echo "── 6. 還原 tenant、清 revoke → 再次驗證能拿到 ──"
 psql_auth "UPDATE tenants SET active=true WHERE id=$TENANT_ID;" >/dev/null
+docker compose -f docker-compose.dev.yml exec -T redis redis-cli DEL "auth:tenant:active:$TENANT_ID" >/dev/null
 code=$(status -b "$ADMIN_COOKIE" "$BASE/auth/v1/me/permissions")
 assert_eq "tenant 還原後 clinic-admin 恢復" "200" "$code"
 
