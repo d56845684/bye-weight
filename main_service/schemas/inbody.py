@@ -69,3 +69,34 @@ class InbodyRecordItem(BaseModel):
     metabolic_rate: float | None = None
     match_status: str | None = None
     uploaded_by: int | None = None
+
+
+class InbodyLatest(BaseModel):
+    """病患 /me/summary 用：最新一筆 + 上一筆算出 delta 直接吐回給前端。
+    沒 prev（只有 1 筆紀錄）時 *_prev 會是 None。"""
+    measured_at: datetime
+    weight: float | None = None
+    weight_prev: float | None = None
+    bmi: float | None = None
+    bmi_prev: float | None = None
+    body_fat_pct: float | None = None
+    body_fat_pct_prev: float | None = None
+    muscle_mass: float | None = None
+    muscle_mass_prev: float | None = None
+    visceral_fat: int | None = None
+    visceral_fat_prev: int | None = None
+    metabolic_rate: float | None = None
+    metabolic_rate_prev: float | None = None
+
+
+class InbodySeries(BaseModel):
+    """30 天序列（時間升冪）。dates 跟三條數值序列等長，前端畫圖用。"""
+    dates: list[str]
+    weight: list[float | None]
+    body_fat_pct: list[float | None]
+    muscle_mass: list[float | None]
+
+
+class InbodySummary(BaseModel):
+    latest: InbodyLatest | None = None
+    series: InbodySeries
