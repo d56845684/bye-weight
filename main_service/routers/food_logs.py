@@ -4,15 +4,38 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from deps import current_user, current_patient
 from models.food_log import FoodLog
+from models.food_log_image import FoodLogImage
 from models.patient import Patient, PatientGoal
-from schemas.food_log import FoodLogAdminItem, FoodLogItem, FoodLogSummary, MacroPct
+from schemas.food_log import (
+    FoodLogAdminItem,
+    FoodLogCreateRequest,
+    FoodLogImageItem,
+    FoodLogItem,
+    FoodLogSummary,
+    MacroPct,
+)
 from utils.cache import invalidate
 
 router = APIRouter(prefix="/food-logs", tags=["food-logs"])
+
+
+def _images_payload(log: FoodLog) -> list[FoodLogImageItem]:
+    """把 eagerly-loaded 的 log.images 收斂成 API 回傳格式；soft-deleted 過濾掉。"""
+    return [
+        FoodLogImageItem(
+            id=img.id,
+            blob_path=img.blob_path,
+            position=img.position,
+            caption=img.caption,
+        )
+        for img in log.images
+        if img.deleted_at is None
+    ]
 
 
 @router.get("")
@@ -25,6 +48,7 @@ async def list_food_logs(
 ):
     stmt = (
         select(FoodLog)
+        .options(selectinload(FoodLog.images))
         .where(
             FoodLog.patient_id == patient.id,
             FoodLog.tenant_id == user["tenant_id"],
@@ -44,7 +68,7 @@ async def list_food_logs(
             "id": log.id,
             "logged_at": log.logged_at.isoformat(),
             "meal_type": log.meal_type,
-            "image_url": log.image_url,
+            "images": [img.model_dump() for img in _images_payload(log)],
             "food_items": log.food_items,
             "total_calories": float(log.total_calories) if log.total_calories else None,
             "total_protein": float(log.total_protein) if log.total_protein else None,
@@ -66,7 +90,8 @@ async def list_records(
     db: AsyncSession = Depends(get_db),
 ):
     """Admin tenant-wide 飲食紀錄列表。JOIN patients 帶姓名 + 病歷號。
-    - 病患走 /food-logs/me/summary，不吃這支；IAM resource 已擋下。"""
+    - 病患走 /food-logs/me/summary，不吃這支；IAM resource 已擋下。
+    - 不回完整 images list，只回 image_count + primary_image_path，避免列表頁 payload 爆炸。"""
     since = datetime.combine(date.today() - timedelta(days=days - 1), datetime.min.time())
     stmt = (
         select(FoodLog, Patient.name, Patient.chart_no)
@@ -81,6 +106,30 @@ async def list_records(
         stmt = stmt.where(FoodLog.patient_id == patient_id)
     stmt = stmt.order_by(FoodLog.logged_at.desc()).limit(limit).offset(offset)
     rows = (await db.execute(stmt)).all()
+
+    food_log_ids = [f.id for f, _, _ in rows]
+    # 一支 aggregate SQL 拿 (count, position=0 / 最小 position 當 primary)
+    # 免得為了 image_count 在 ORM 踩 N+1。
+    img_stats: dict[int, tuple[int, str | None]] = {}
+    if food_log_ids:
+        img_rows = (await db.execute(
+            select(
+                FoodLogImage.food_log_id,
+                FoodLogImage.blob_path,
+                FoodLogImage.position,
+            )
+            .where(
+                FoodLogImage.food_log_id.in_(food_log_ids),
+                FoodLogImage.tenant_id == user["tenant_id"],
+                FoodLogImage.deleted_at.is_(None),
+            )
+            .order_by(FoodLogImage.food_log_id, FoodLogImage.position)
+        )).all()
+        bucket: dict[int, list[str]] = defaultdict(list)
+        for log_id, blob_path, _pos in img_rows:
+            bucket[log_id].append(blob_path)
+        img_stats = {lid: (len(paths), paths[0]) for lid, paths in bucket.items()}
+
     return [
         FoodLogAdminItem(
             id=f.id,
@@ -89,7 +138,8 @@ async def list_records(
             chart_no=pc,
             logged_at=f.logged_at,
             meal_type=f.meal_type,
-            image_url=f.image_url,
+            image_count=img_stats.get(f.id, (0, None))[0],
+            primary_image_path=img_stats.get(f.id, (0, None))[1],
             total_calories=float(f.total_calories) if f.total_calories is not None else None,
             total_protein=float(f.total_protein) if f.total_protein is not None else None,
             total_carbs=float(f.total_carbs) if f.total_carbs is not None else None,
@@ -119,6 +169,7 @@ async def food_log_summary(
 
     stmt = (
         select(FoodLog)
+        .options(selectinload(FoodLog.images))
         .where(
             FoodLog.patient_id == patient.id,
             FoodLog.tenant_id == user["tenant_id"],
@@ -191,7 +242,7 @@ async def food_log_summary(
             id=l.id,
             logged_at=l.logged_at,
             meal_type=l.meal_type,
-            image_url=l.image_url,
+            images=_images_payload(l),
             food_items=l.food_items if isinstance(l.food_items, list) else None,
             total_calories=float(l.total_calories) if l.total_calories is not None else None,
             total_protein=float(l.total_protein) if l.total_protein is not None else None,
@@ -236,33 +287,41 @@ async def food_log_summary(
 
 @router.post("")
 async def create_food_log(
-    meal_type: str,
-    image_url: str | None = None,
-    food_items: dict | None = None,
-    total_calories: float | None = None,
-    total_protein: float | None = None,
-    total_carbs: float | None = None,
-    total_fat: float | None = None,
-    ai_suggestion: str | None = None,
+    body: FoodLogCreateRequest,
     user: dict = Depends(current_user),
     patient: Patient = Depends(current_patient),
     db: AsyncSession = Depends(get_db),
 ):
+    """建立一筆飲食紀錄，附 0..N 張圖。
+    image_paths 是 `/upload/presigned-url` 回來、client 已實際 PUT 上去的 GCS
+    blob path，server 依 list 順序當 position（0 = primary）。"""
     log = FoodLog(
         patient_id=patient.id,
         tenant_id=user["tenant_id"],
         logged_at=datetime.now(),
-        meal_type=meal_type,
-        image_url=image_url,
-        food_items=food_items,
-        total_calories=total_calories,
-        total_protein=total_protein,
-        total_carbs=total_carbs,
-        total_fat=total_fat,
-        ai_suggestion=ai_suggestion,
+        meal_type=body.meal_type,
+        food_items=body.food_items,
+        total_calories=body.total_calories,
+        total_protein=body.total_protein,
+        total_carbs=body.total_carbs,
+        total_fat=body.total_fat,
+        ai_suggestion=body.ai_suggestion,
     )
     db.add(log)
+    await db.flush()  # 先拿 log.id 才能給 images 當 FK
+
+    for idx, blob_path in enumerate(body.image_paths):
+        blob_path = (blob_path or "").strip()
+        if not blob_path:
+            continue
+        db.add(FoodLogImage(
+            food_log_id=log.id,
+            tenant_id=user["tenant_id"],
+            blob_path=blob_path,
+            position=idx,
+        ))
+
     await db.commit()
     today = datetime.now().strftime("%Y-%m-%d")
     await invalidate(f"cache:food:{patient.id}:{today}")
-    return {"id": log.id, "status": "created"}
+    return {"id": log.id, "status": "created", "image_count": len(body.image_paths)}

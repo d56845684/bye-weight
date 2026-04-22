@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,14 +26,17 @@ async def get_presigned_url(
     file_type: "inbody" | "food"
     - food: 病患上傳自己的，blob path 用該 user 對應的 patient.id
     - inbody: 員工上傳，blob path 用 uploader 的 user_id（配對後再搬）
+
+    blob path 後綴加 6-char hex，讓同一秒內連拍多張（食物多張圖）也不會撞名。
     """
     role = user["role"]
     tenant_id = user["tenant_id"]
+    stamp = f"{datetime.now():%Y%m%d_%H%M%S}_{secrets.token_hex(3)}"
 
     if file_type == "inbody":
         if role not in ("staff", "nutritionist", "admin"):
             raise HTTPException(403, "only staff can upload InBody records")
-        blob_path = f"inbody/pending/t{tenant_id}/u{user['user_id']}/{datetime.now():%Y%m%d_%H%M%S}.jpg"
+        blob_path = f"inbody/pending/t{tenant_id}/u{user['user_id']}/{stamp}.jpg"
     elif file_type == "food":
         patient = (await db.execute(
             select(Patient).where(
@@ -42,7 +46,7 @@ async def get_presigned_url(
         )).scalar_one_or_none()
         if not patient:
             raise HTTPException(403, "no patient profile for current user")
-        blob_path = f"food/t{tenant_id}/p{patient.id}/{datetime.now():%Y%m%d_%H%M%S}.jpg"
+        blob_path = f"food/t{tenant_id}/p{patient.id}/{stamp}.jpg"
     else:
         raise HTTPException(400, "invalid file_type, must be 'inbody' or 'food'")
 

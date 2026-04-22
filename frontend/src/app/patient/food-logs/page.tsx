@@ -7,11 +7,18 @@ import { Ring } from "@/components/charts";
 // Direction B Diet tab：今日熱量 ring + 三大營養素 bar + 餐點卡片。
 // 資料來源：/food-logs/me/summary（Phase 2）。
 
+type FoodImage = {
+  id: number;
+  blob_path: string;
+  position: number;
+  caption: string | null;
+};
+
 type FoodItem = {
   id: number;
   logged_at: string;
   meal_type: string | null;
-  image_url: string | null;
+  images: FoodImage[];
   food_items: { name: string; portion?: string }[] | null;
   total_calories: number | null;
   total_protein: number | null;
@@ -19,6 +26,17 @@ type FoodItem = {
   total_fat: number | null;
   ai_suggestion: string | null;
 };
+
+// blob_path 可能是 "food/t1/p3/xxx.jpg" 也可能是已簽好的完整 URL（舊資料）。
+// 判斷方式：有 protocol 就當 URL 直出，否則假設 bucket 是 public、走 storage.googleapis.com。
+// bucket 名稱目前由 backend 決定；前端靠 env var NEXT_PUBLIC_GCS_BUCKET_HOST 組 public host，
+// 沒設時直接使用 blob_path（開發可讓後端代轉或先不顯示圖）。
+const GCS_HOST = process.env.NEXT_PUBLIC_GCS_BUCKET_HOST || "";
+function imageSrc(blobPath: string): string {
+  if (/^https?:\/\//i.test(blobPath)) return blobPath;
+  if (!GCS_HOST) return blobPath;
+  return `${GCS_HOST.replace(/\/$/, "")}/${blobPath.replace(/^\//, "")}`;
+}
 
 type FoodSummary = {
   target_kcal: number | null;
@@ -123,7 +141,18 @@ function MealCard({ m }: { m: FoodItem }) {
   return (
     <div className="bg-white rounded-2xl overflow-hidden">
       <div className="h-[110px] flex items-end p-2.5 relative" style={{ background: meta.img }}>
-        {m.image_url && <img src={m.image_url} alt="" className="absolute inset-0 w-full h-full object-cover" />}
+        {m.images[0] && (
+          <img
+            src={imageSrc(m.images[0].blob_path)}
+            alt={m.images[0].caption ?? ""}
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+        )}
+        {m.images.length > 1 && (
+          <div className="absolute bottom-2.5 left-2.5 text-[10px] font-mono bg-black/55 text-white px-2 py-0.5 rounded-xl">
+            +{m.images.length - 1}
+          </div>
+        )}
         <div className="absolute top-2.5 right-2.5 text-[10px] font-mono bg-white/80 text-gray-700 px-2 py-0.5 rounded-xl">
           {time}
         </div>

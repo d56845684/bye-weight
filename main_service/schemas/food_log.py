@@ -1,12 +1,21 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class FoodLogImageItem(BaseModel):
+    """一筆飲食紀錄底下的一張圖。blob_path = GCS object 路徑，前端自己組 URL
+    或另外打 signed-url endpoint 取 read-only URL。"""
+    id: int
+    blob_path: str
+    position: int = 0
+    caption: str | None = None
 
 
 class FoodLogItem(BaseModel):
     id: int
     logged_at: datetime
     meal_type: str | None = None
-    image_url: str | None = None
+    images: list[FoodLogImageItem] = Field(default_factory=list)
     food_items: list[dict] | None = None
     total_calories: float | None = None
     total_protein: float | None = None
@@ -16,8 +25,10 @@ class FoodLogItem(BaseModel):
 
 
 class FoodLogCreateRequest(BaseModel):
+    """病患端建立飲食紀錄。image_paths = 已透過 /upload/presigned-url 上傳好
+    的 GCS blob path list，可空可多張；server 依 list 順序當 position。"""
     meal_type: str
-    image_url: str | None = None
+    image_paths: list[str] = Field(default_factory=list)
     food_items: list[dict] | None = None
     total_calories: float | None = None
     total_protein: float | None = None
@@ -34,14 +45,16 @@ class MacroPct(BaseModel):
 
 
 class FoodLogAdminItem(BaseModel):
-    """Admin 後台 tenant-wide 飲食列表用。帶病患姓名 + 病歷號避免前端 N+1。"""
+    """Admin 後台 tenant-wide 飲食列表用。帶病患姓名 + 病歷號避免前端 N+1；
+    只回 image_count + primary_image_path，避免 list 頁面吃滿 payload。"""
     id: int
     patient_id: int
     patient_name: str | None = None
     chart_no: str | None = None
     logged_at: datetime
     meal_type: str | None = None
-    image_url: str | None = None
+    image_count: int = 0
+    primary_image_path: str | None = None
     total_calories: float | None = None
     total_protein: float | None = None
     total_carbs: float | None = None
