@@ -64,24 +64,33 @@ actions=$(curl -s -b "$SUPER_COOKIE" "$BASE/auth/v1/me/permissions" \
 assert_eq "super_admin 可打全系統" '["*"]' "$actions"
 
 echo "── 5. 密碼登入 ──"
-resp=$(curl -s -c "$PW_COOKIE" -X POST "$BASE/auth/v1/password-login" \
-    -H "Content-Type: application/json" \
-    -d '{"email":"admin@dev.local","password":"admin123"}')
-role=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('role',''))")
-assert_eq "正確密碼登入回 super_admin" "super_admin" "$role"
+# SUPER_ADMIN_* 從 auth_service/.env.docker 拿（container 啟動時 upsert 進 DB），
+# 測試跟服務共用同一個值來源。
+SUPER_EMAIL="${SUPER_ADMIN_EMAIL:-$(/usr/bin/grep -E '^SUPER_ADMIN_EMAIL=' auth_service/.env.docker | /usr/bin/cut -d= -f2- )}"
+SUPER_PW="${SUPER_ADMIN_PASSWORD:-$(/usr/bin/grep -E '^SUPER_ADMIN_PASSWORD=' auth_service/.env.docker | /usr/bin/cut -d= -f2- )}"
+if [[ -z "$SUPER_EMAIL" || -z "$SUPER_PW" ]]; then
+    echo "  ✗ SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD not set in auth_service/.env.docker"
+    FAIL=$((FAIL + 1))
+else
+    resp=$(curl -s -c "$PW_COOKIE" -X POST "$BASE/auth/v1/password-login" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"$SUPER_EMAIL\",\"password\":\"$SUPER_PW\"}")
+    role=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('role',''))")
+    assert_eq "正確密碼登入回 super_admin" "super_admin" "$role"
 
-code=$(status -b "$PW_COOKIE" "$BASE/admin/users")
-assert_eq "密碼登入後可訪問 /admin/users" "200" "$code"
+    code=$(status -b "$PW_COOKIE" "$BASE/admin/users")
+    assert_eq "密碼登入後可訪問 /admin/users" "200" "$code"
 
-code=$(status -X POST "$BASE/auth/v1/password-login" \
-    -H "Content-Type: application/json" \
-    -d '{"email":"admin@dev.local","password":"wrong"}')
-assert_eq "錯密碼回 401" "401" "$code"
+    code=$(status -X POST "$BASE/auth/v1/password-login" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"$SUPER_EMAIL\",\"password\":\"wrong\"}")
+    assert_eq "錯密碼回 401" "401" "$code"
 
-code=$(status -X POST "$BASE/auth/v1/password-login" \
-    -H "Content-Type: application/json" \
-    -d '{"email":"ghost@dev.local","password":"admin123"}')
-assert_eq "不存在 email 回 401" "401" "$code"
+    code=$(status -X POST "$BASE/auth/v1/password-login" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"ghost@dev.local\",\"password\":\"$SUPER_PW\"}")
+    assert_eq "不存在 email 回 401" "401" "$code"
+fi
 
 echo "── 6. logout 後 token 立即撤銷 ──"
 curl -s -b "$SUPER_COOKIE" -X POST "$BASE/auth/v1/logout" >/dev/null

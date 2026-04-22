@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 
@@ -8,12 +9,66 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
 	"auth_service/config"
 	"auth_service/engine"
 	"auth_service/handler"
 	"auth_service/store"
 )
+
+// upsertSuperAdminPassword：若 SUPER_ADMIN_PASSWORD 有設，用它覆蓋 dev super_admin
+// 的 password identity（bcrypt 後 UPSERT 到 auth_identities）。空字串 → 完全略過，
+// 不動 DB（保留 migration 0003 或前一次啟動種的密碼）。
+//
+// 這個 hook 是為了讓「預設密碼」可以在 .env 管理，不用寫死在前端提示或 migration。
+// Idempotent：重啟無副作用（反覆 UPDATE 同 hash）。
+func upsertSuperAdminPassword(ctx context.Context, db *pgxpool.Pool, email, password string) error {
+	if password == "" {
+		return nil
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
+	if err != nil {
+		return err
+	}
+	// 以 line_uuid='dev-admin'（migration 0003 / 0021 一路帶下來的錨點）找到 user
+	var userID int
+	if err := db.QueryRow(ctx, `
+		SELECT u.id FROM users u
+		JOIN auth_identities i ON i.user_id = u.id
+		WHERE i.provider = 'line' AND i.subject = 'dev-admin'
+		  AND i.deleted_at IS NULL AND u.deleted_at IS NULL
+		LIMIT 1
+	`).Scan(&userID); err != nil {
+		log.Printf("super_admin password upsert: dev-admin user not found (%v), skip", err)
+		return nil
+	}
+	// Soft-delete 舊 password identity（如果 email 變了）+ insert 新的。
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		UPDATE auth_identities
+		SET deleted_at = NOW()
+		WHERE user_id = $1 AND provider = 'password' AND deleted_at IS NULL
+	`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO auth_identities (user_id, provider, subject, secret_hash)
+		VALUES ($1, 'password', $2, $3)
+	`, userID, email, string(hash)); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	log.Printf("super_admin password identity upserted for %s (user_id=%d)", email, userID)
+	return nil
+}
 
 func main() {
 	cfg := config.Load()
@@ -24,6 +79,12 @@ func main() {
 
 	db := store.NewDB(cfg.AuthDatabaseURL)
 	rdb := store.NewRedis(cfg.RedisURL)
+
+	// 把 env 裡的 super_admin 密碼 upsert 進 auth_identities；production 無設定則 no-op。
+	if err := upsertSuperAdminPassword(context.Background(), db, cfg.SuperAdminEmail, cfg.SuperAdminPassword); err != nil {
+		log.Printf("super_admin password upsert failed: %v", err)
+	}
+
 	eng := engine.New(db, rdb)
 	h := handler.New(cfg, eng, rdb)
 

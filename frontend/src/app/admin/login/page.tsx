@@ -7,7 +7,7 @@ import { GoogleSignInButton } from "@/components/GoogleSignInButton";
 
 export default function AdminLoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("admin@dev.local");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -120,10 +120,6 @@ export default function AdminLoginPage() {
         </div>
 
         <GoogleSignInButton onCredential={googleSignIn} />
-
-        <div className="text-xs text-gray-400 text-center pt-2 border-t">
-          預設測試帳號：admin@dev.local / admin123（僅開發環境）
-        </div>
       </form>
     </div>
   );
