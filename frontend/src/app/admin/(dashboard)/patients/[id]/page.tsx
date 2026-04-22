@@ -3,6 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { fetchAPI } from "@/lib/api";
+import { Can } from "@/lib/permissions";
 
 // Admin 單一病患 detail 頁：5 tab（基本資料 / InBody / 飲食 / 看診 / 目標），
 // 資料靠 GET /patients/{id}/detail aggregator 一次抓完，不切多支 endpoint。
@@ -181,7 +182,7 @@ export default function PatientDetailPage() {
       {tab === "inbody" && <InbodyTab rows={data.inbody_records} />}
       {tab === "food"   && <FoodTab rows={data.food_logs} />}
       {tab === "visits" && <VisitsTab rows={data.visits} />}
-      {tab === "goals"  && <GoalsTab rows={data.goals} />}
+      {tab === "goals"  && <GoalsTab rows={data.goals} patientId={Number(id)} onCreated={reload} />}
     </div>
   );
 }
@@ -242,14 +243,18 @@ function BasicTab({
       </div>
       {error && <div className="bg-red-50 text-red-700 p-3 rounded text-sm">{error}</div>}
       <div className="flex gap-2 pt-2">
-        <button onClick={save} disabled={saving || !dirty}
-                className="bg-red-700 text-white px-6 py-2 rounded hover:bg-red-800 disabled:opacity-50">
-          {saving ? "儲存中…" : "儲存"}
-        </button>
-        <button onClick={onDelete}
-                className="px-6 py-2 border border-red-400 text-red-700 rounded hover:bg-red-50">
-          刪除
-        </button>
+        <Can action="main:patient:write">
+          <button onClick={save} disabled={saving || !dirty}
+                  className="bg-red-700 text-white px-6 py-2 rounded hover:bg-red-800 disabled:opacity-50">
+            {saving ? "儲存中…" : "儲存"}
+          </button>
+        </Can>
+        <Can action="main:patient:delete">
+          <button onClick={onDelete}
+                  className="px-6 py-2 border border-red-400 text-red-700 rounded hover:bg-red-50">
+            刪除
+          </button>
+        </Can>
       </div>
     </div>
   );
@@ -402,41 +407,222 @@ function VisitsTab({ rows }: { rows: VisitRow[] }) {
   );
 }
 
-function GoalsTab({ rows }: { rows: GoalRow[] }) {
-  if (rows.length === 0) return <Empty label="尚未設定目標" />;
+function GoalsTab({
+  rows,
+  patientId,
+  onCreated,
+}: {
+  rows: GoalRow[];
+  patientId: number;
+  onCreated: () => Promise<void>;
+}) {
+  const [showForm, setShowForm] = useState(false);
   return (
-    <div className="bg-white rounded-lg shadow-sm overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="bg-gray-100 text-left">
-          <tr>
-            <th className="p-3">生效日</th>
-            <th className="p-3 text-right">每日熱量</th>
-            <th className="p-3 text-right">目標體重</th>
-            <th className="p-3 text-right">目標體脂</th>
-            <th className="p-3 text-right">C / P / F %</th>
-            <th className="p-3">備註</th>
-            <th className="p-3">設定者</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={r.id} className={`border-t align-top ${i === 0 ? "bg-teal-50" : ""}`}>
-              <td className="p-3 whitespace-nowrap font-mono">
-                {r.effective_from}
-                {i === 0 && <span className="ml-1.5 text-[10px] bg-teal-600 text-white px-1.5 py-0.5 rounded">當前</span>}
-              </td>
-              <td className="p-3 text-right font-mono">{r.daily_kcal ?? "—"}</td>
-              <td className="p-3 text-right font-mono">{fmt(r.target_weight)}</td>
-              <td className="p-3 text-right font-mono">{fmt(r.target_body_fat)}</td>
-              <td className="p-3 text-right font-mono text-xs">
-                {fmt(r.target_carbs_pct, 0)} / {fmt(r.target_protein_pct, 0)} / {fmt(r.target_fat_pct, 0)}
-              </td>
-              <td className="p-3 text-xs text-gray-700">{r.notes ?? "—"}</td>
-              <td className="p-3 text-xs text-gray-500">{r.set_by ? `#${r.set_by}` : "—"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div>
+      <div className="flex items-center mb-3">
+        <div className="text-xs text-gray-500">
+          append-only 歷史，每次調整 INSERT 新 row，舊 row 永遠保留
+        </div>
+        <Can action="main:goal:write">
+          <button
+            onClick={() => setShowForm(true)}
+            className="ml-auto text-sm px-3 py-1.5 bg-red-700 text-white rounded hover:bg-red-800"
+          >
+            + 新增目標
+          </button>
+        </Can>
+      </div>
+      {rows.length === 0 ? (
+        <Empty label="尚未設定目標" />
+      ) : (
+        <div className="bg-white rounded-lg shadow-sm overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-100 text-left">
+              <tr>
+                <th className="p-3">生效日</th>
+                <th className="p-3 text-right">每日熱量</th>
+                <th className="p-3 text-right">目標體重</th>
+                <th className="p-3 text-right">目標體脂</th>
+                <th className="p-3 text-right">C / P / F %</th>
+                <th className="p-3">備註</th>
+                <th className="p-3">設定者</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={r.id} className={`border-t align-top ${i === 0 ? "bg-teal-50" : ""}`}>
+                  <td className="p-3 whitespace-nowrap font-mono">
+                    {r.effective_from}
+                    {i === 0 && <span className="ml-1.5 text-[10px] bg-teal-600 text-white px-1.5 py-0.5 rounded">當前</span>}
+                  </td>
+                  <td className="p-3 text-right font-mono">{r.daily_kcal ?? "—"}</td>
+                  <td className="p-3 text-right font-mono">{fmt(r.target_weight)}</td>
+                  <td className="p-3 text-right font-mono">{fmt(r.target_body_fat)}</td>
+                  <td className="p-3 text-right font-mono text-xs">
+                    {fmt(r.target_carbs_pct, 0)} / {fmt(r.target_protein_pct, 0)} / {fmt(r.target_fat_pct, 0)}
+                  </td>
+                  <td className="p-3 text-xs text-gray-700">{r.notes ?? "—"}</td>
+                  <td className="p-3 text-xs text-gray-500">{r.set_by ? `#${r.set_by}` : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {showForm && (
+        <GoalCreateModal
+          patientId={patientId}
+          lastGoal={rows[0] ?? null}
+          onClose={() => setShowForm(false)}
+          onCreated={async () => {
+            setShowForm(false);
+            await onCreated();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function GoalCreateModal({
+  patientId,
+  lastGoal,
+  onClose,
+  onCreated,
+}: {
+  patientId: number;
+  lastGoal: GoalRow | null;
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  // 預填上一筆 goal 當預設，方便「只改一兩個值」流程
+  const [form, setForm] = useState({
+    effective_from: today,
+    daily_kcal:         lastGoal?.daily_kcal?.toString() ?? "",
+    target_weight:      lastGoal?.target_weight?.toString() ?? "",
+    target_body_fat:    lastGoal?.target_body_fat?.toString() ?? "",
+    target_carbs_pct:   lastGoal?.target_carbs_pct?.toString() ?? "",
+    target_protein_pct: lastGoal?.target_protein_pct?.toString() ?? "",
+    target_fat_pct:     lastGoal?.target_fat_pct?.toString() ?? "",
+    notes: "",
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const num = (s: string): number | null => (s.trim() ? Number(s) : null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const body: Record<string, unknown> = {
+        patient_id: patientId,
+        effective_from: form.effective_from,
+        daily_kcal: num(form.daily_kcal),
+        target_weight: num(form.target_weight),
+        target_body_fat: num(form.target_body_fat),
+        target_carbs_pct: num(form.target_carbs_pct),
+        target_protein_pct: num(form.target_protein_pct),
+        target_fat_pct: num(form.target_fat_pct),
+        notes: form.notes.trim() || null,
+      };
+      await fetchAPI("/patient-goals", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      await onCreated();
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const setF = <K extends keyof typeof form>(k: K, v: string) =>
+    setForm((f) => ({ ...f, [k]: v }));
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+      <form onSubmit={submit} className="bg-white rounded-lg p-5 w-full max-w-md space-y-3 max-h-[90vh] overflow-y-auto">
+        <div>
+          <h2 className="text-lg font-bold">新增目標 snapshot</h2>
+          <p className="text-xs text-gray-500 mt-1">
+            留空的欄位會沿用歷史上最後一次設定；至少要有一個值變更才送得出去。
+          </p>
+        </div>
+
+        <Field label="生效日 *">
+          <input type="date" required value={form.effective_from}
+                 onChange={(e) => setF("effective_from", e.target.value)}
+                 className="w-full border rounded px-3 py-2 text-sm" />
+        </Field>
+
+        <div className="pt-2 border-t">
+          <div className="text-xs font-semibold text-gray-500 mb-2">食物目標</div>
+          <Field label="每日熱量 (kcal)">
+            <input type="number" min={500} max={5000} value={form.daily_kcal}
+                   onChange={(e) => setF("daily_kcal", e.target.value)}
+                   placeholder="如 1650"
+                   className="w-full border rounded px-3 py-2 text-sm font-mono" />
+          </Field>
+          <div className="grid grid-cols-3 gap-2 mt-2">
+            <Field label="C %">
+              <input type="number" min={0} max={100} step="0.1" value={form.target_carbs_pct}
+                     onChange={(e) => setF("target_carbs_pct", e.target.value)}
+                     className="w-full border rounded px-2 py-2 text-sm font-mono" />
+            </Field>
+            <Field label="P %">
+              <input type="number" min={0} max={100} step="0.1" value={form.target_protein_pct}
+                     onChange={(e) => setF("target_protein_pct", e.target.value)}
+                     className="w-full border rounded px-2 py-2 text-sm font-mono" />
+            </Field>
+            <Field label="F %">
+              <input type="number" min={0} max={100} step="0.1" value={form.target_fat_pct}
+                     onChange={(e) => setF("target_fat_pct", e.target.value)}
+                     className="w-full border rounded px-2 py-2 text-sm font-mono" />
+            </Field>
+          </div>
+        </div>
+
+        <div className="pt-2 border-t">
+          <div className="text-xs font-semibold text-gray-500 mb-2">InBody 目標</div>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="目標體重 kg">
+              <input type="number" min={20} max={300} step="0.1" value={form.target_weight}
+                     onChange={(e) => setF("target_weight", e.target.value)}
+                     className="w-full border rounded px-3 py-2 text-sm font-mono" />
+            </Field>
+            <Field label="目標體脂 %">
+              <input type="number" min={3} max={60} step="0.1" value={form.target_body_fat}
+                     onChange={(e) => setF("target_body_fat", e.target.value)}
+                     className="w-full border rounded px-3 py-2 text-sm font-mono" />
+            </Field>
+          </div>
+        </div>
+
+        <Field label="備註">
+          <textarea value={form.notes}
+                    onChange={(e) => setF("notes", e.target.value)}
+                    rows={2} maxLength={500}
+                    placeholder="例：減脂期第二階段"
+                    className="w-full border rounded px-3 py-2 text-sm" />
+        </Field>
+
+        {err && <div className="bg-red-50 text-red-700 p-2.5 rounded text-sm">{err}</div>}
+
+        <div className="flex gap-2 pt-2 border-t">
+          <button type="submit" disabled={submitting}
+                  className="flex-1 bg-red-700 text-white py-2 rounded hover:bg-red-800 disabled:opacity-50">
+            {submitting ? "建立中…" : "建立 snapshot"}
+          </button>
+          <button type="button" onClick={onClose}
+                  className="flex-1 border rounded py-2 hover:bg-gray-50">
+            取消
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

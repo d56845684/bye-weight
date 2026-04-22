@@ -4,6 +4,7 @@ import { Suspense, useCallback, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { GoogleSignInButton } from "@/components/GoogleSignInButton";
 import { humaMessage } from "@/lib/api";
+import { resolvePostLogin } from "@/lib/postLogin";
 
 // 綁定連結 landing page。admin 透過 /auth/v1/admin/users/{id}/google-binding-token
 // 產出 URL，user 在這裡登入 Google 完成綁定。
@@ -12,16 +13,8 @@ import { humaMessage } from "@/lib/api";
 //   1. GoogleSignInButton 回 id_token (credential)
 //   2. POST /auth/v1/google-bind { credential, binding_token } → 後端驗 id_token +
 //      查 Redis token → INSERT auth_identities (provider=google, subject=sub) → 發 JWT
-//   3. 導去 role home（admin → /admin/patients，super_admin → /admin/tenants，
-//      一般 staff/nutritionist → /admin/patients）
-
-const ROLE_HOME: Record<string, string> = {
-  super_admin: "/admin/tenants",
-  admin:       "/admin/patients",
-  staff:       "/staff/inbody",
-  nutritionist:"/nutritionist/push",
-  patient:     "/patient/food-logs",
-};
+//   3. resolvePostLogin 決定導頁：role=patient 且尚未建 profile → /patient/register，
+//      其餘對 ROLE_HOME 查首頁。
 
 export default function BindGooglePage() {
   return (
@@ -67,10 +60,11 @@ function Inner() {
         return;
       }
       const data = await res.json();
+      const target = await resolvePostLogin(data.role);
       setDone(true);
       setStatus("");
       setTimeout(() => {
-        router.replace(ROLE_HOME[data.role] ?? "/admin/patients");
+        router.replace(target);
       }, 1000);
     } catch (e: any) {
       setError(e.message);

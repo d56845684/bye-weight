@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,7 +8,7 @@ from database import get_db
 from deps import current_user, current_patient
 from models.patient import Patient
 from models.visit import Visit, Medication
-from schemas.visit import VisitTimelineItem
+from schemas.visit import VisitAdminItem, VisitTimelineItem
 
 router = APIRouter(prefix="/visits", tags=["visits"])
 
@@ -40,6 +40,59 @@ async def list_visits(
         }
         for v in visits
     ]
+
+
+@router.get("/records", response_model=list[VisitAdminItem])
+async def list_records(
+    patient_id: int | None = Query(None, description="過濾單一病患"),
+    upcoming_only: bool = Query(False, description="只列 upcoming（next_visit_date >= today）"),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    user: dict = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin tenant-wide 看診紀錄列表。病患走 /visits/me/timeline。
+    upcoming 先、其餘依 visit_date desc。"""
+    stmt = (
+        select(Visit, Patient.name, Patient.chart_no)
+        .join(Patient, Patient.id == Visit.patient_id, isouter=True)
+        .where(
+            Visit.tenant_id == user["tenant_id"],
+            Visit.deleted_at.is_(None),
+        )
+    )
+    if patient_id is not None:
+        stmt = stmt.where(Visit.patient_id == patient_id)
+    if upcoming_only:
+        stmt = stmt.where(Visit.next_visit_date.isnot(None), Visit.next_visit_date >= date.today())
+    stmt = stmt.order_by(Visit.visit_date.desc()).limit(limit).offset(offset)
+    rows = (await db.execute(stmt)).all()
+
+    today = date.today()
+    items = [
+        VisitAdminItem(
+            id=v.id,
+            patient_id=v.patient_id,
+            patient_name=pn,
+            chart_no=pc,
+            visit_date=v.visit_date,
+            next_visit_date=v.next_visit_date,
+            doctor_id=v.doctor_id,
+            notes=v.notes,
+            upcoming=(v.next_visit_date is not None and v.next_visit_date >= today),
+            days_away=((v.next_visit_date - today).days
+                       if v.next_visit_date and v.next_visit_date >= today else None),
+            created_at=v.created_at,
+        )
+        for v, pn, pc in rows
+    ]
+    # upcoming 在前
+    items.sort(key=lambda x: (
+        0 if x.upcoming else 1,
+        x.days_away if x.upcoming and x.days_away is not None else 0,
+        -x.visit_date.toordinal(),
+    ))
+    return items
 
 
 @router.get("/me/timeline", response_model=list[VisitTimelineItem])

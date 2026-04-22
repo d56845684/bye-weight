@@ -22,6 +22,11 @@ type Config struct {
 	// Shared secret for service-to-service calls hitting /auth/internal/*
 	// （LINE webhook 之類 no-user-JWT 的情境）。空字串 → internal endpoints fail-close。
 	InternalServiceToken string
+	// Dev super_admin 的 email / password。auth_service 啟動時會拿來 UPSERT 密碼
+	// identity。Password 空字串 → 不動 DB，保留先前（migration 0003 或上次啟動）
+	// 種的密碼。Production 建議不要設（透過 SSO 登入）。
+	SuperAdminEmail    string
+	SuperAdminPassword string
 }
 
 func Load() *Config {
@@ -40,6 +45,8 @@ func Load() *Config {
 		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
 		Env:                  getEnv("ENV", "development"),
 		InternalServiceToken: getEnv("INTERNAL_SERVICE_TOKEN", ""),
+		SuperAdminEmail:      getEnv("SUPER_ADMIN_EMAIL", "admin@dev.local"),
+		SuperAdminPassword:   getEnv("SUPER_ADMIN_PASSWORD", ""),
 	}
 }
 

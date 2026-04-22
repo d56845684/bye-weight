@@ -3,30 +3,10 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import liff from "@line/liff";
+import { resolvePostLogin } from "@/lib/postLogin";
 
 const LIFF_ID = process.env.NEXT_PUBLIC_LIFF_ID || "";
 const LINE_OA_URL = process.env.NEXT_PUBLIC_LINE_OA_URL || "";
-
-const ROLE_HOME: Record<string, string> = {
-  patient: "/patient/food-logs",
-  staff: "/staff/inbody",
-  nutritionist: "/nutritionist/push",
-  admin: "/admin/patients",         // clinic-admin：統一後台病患頁
-  super_admin: "/admin/tenants",    // 系統管理員：租戶管理
-};
-
-// 綁定連結（line-bind 成功）的 patient 若還沒在 main_service 建 profile，
-// GET /patients/me 回 404 → 導去 /patient/register 填表；其餘情況走 ROLE_HOME。
-// 只有「邀請連結」這個一次性流程會呼叫；fast path / 一般 line-token 不做這件事。
-async function resolvePatientHome(nextPath: string | null): Promise<string> {
-  try {
-    const res = await fetch("/api/v1/patients/me", { credentials: "include" });
-    if (res.status === 404) return "/patient/register";
-  } catch {
-    // ignore；fallback 到正常 ROLE_HOME
-  }
-  return nextPath ?? "/patient/food-logs";
-}
 
 export default function LiffPage() {
   return (
@@ -104,10 +84,7 @@ function LiffInner() {
       return;
     }
     const data = await res.json();
-    const target =
-      data.role === "patient"
-        ? await resolvePatientHome(nextPath)
-        : nextPath ?? ROLE_HOME[data.role] ?? "/patient/food-logs";
+    const target = await resolvePostLogin(data.role, nextPath);
     router.push(target);
   }, [bindingToken, nextPath, router]);
 
@@ -183,10 +160,7 @@ function LiffInner() {
             const meRes = await fetch("/auth/v1/me", { credentials: "include" });
             if (meRes.ok) {
               const me = await meRes.json();
-              const target =
-                me.role === "patient"
-                  ? await resolvePatientHome(nextPath)
-                  : nextPath ?? ROLE_HOME[me.role] ?? "/patient/food-logs";
+              const target = await resolvePostLogin(me.role, nextPath);
               router.replace(target);
               return;
             }
@@ -226,10 +200,7 @@ function LiffInner() {
             throw new Error(msg || `HTTP ${res.status}`);
           }
           const data = await res.json();
-          const target =
-            data.role === "patient"
-              ? await resolvePatientHome(nextPath)
-              : nextPath ?? ROLE_HOME[data.role] ?? "/patient/food-logs";
+          const target = await resolvePostLogin(data.role, nextPath);
           router.push(target);
           return;
         }

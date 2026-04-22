@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from deps import current_user
@@ -242,6 +243,7 @@ async def get_patient_detail(
     food_since = datetime.combine(date.today() - timedelta(days=food_log_days - 1), datetime.min.time())
     food_rows = (await db.execute(
         select(FoodLog)
+        .options(selectinload(FoodLog.images))
         .where(
             FoodLog.patient_id == patient_id,
             FoodLog.tenant_id == user["tenant_id"],
@@ -318,7 +320,16 @@ async def get_patient_detail(
                 "id": f.id,
                 "logged_at": f.logged_at.isoformat(),
                 "meal_type": f.meal_type,
-                "image_url": f.image_url,
+                "images": [
+                    {
+                        "id": img.id,
+                        "blob_path": img.blob_path,
+                        "position": img.position,
+                        "caption": img.caption,
+                    }
+                    for img in f.images
+                    if img.deleted_at is None
+                ],
                 "food_items": f.food_items,
                 "total_calories": float(f.total_calories) if f.total_calories is not None else None,
                 "total_protein": float(f.total_protein) if f.total_protein is not None else None,

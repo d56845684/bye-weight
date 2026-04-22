@@ -1,33 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fetchAPI } from "@/lib/api";
 import { BodyMap } from "@/components/BodyMap";
 
-// Direction B Body tab：InBody 最新紀錄 + 8 格 metric grid + 分部位示意圖。
-// 資料來源：/inbody/me/summary（Phase 2/3 後端已算好 prev + deltas + segmental）。
+// Direction B Body tab：InBody 紀錄 + 10 格 metric grid + 分部位示意圖。
+// 頂部可從 dropdown 選過去任一次測量；delta 針對「選定 record vs 再前一筆」計算。
+// 資料來源：/inbody/me/summary（Phase 2/3 後端吐 latest + series + records list）。
 
 type Segmental = {
   la: number | null; ra: number | null; tr: number | null;
   ll: number | null; rl: number | null;
 };
 
+type InbodyRecord = {
+  id: number;
+  measured_at: string;
+  weight: number | null; bmi: number | null; body_fat_pct: number | null;
+  muscle_mass: number | null; visceral_fat: number | null; metabolic_rate: number | null;
+  body_age: number | null;
+  total_body_water: number | null; protein_mass: number | null; mineral_mass: number | null;
+  muscle_segmental: Segmental | null; fat_segmental: Segmental | null;
+};
+
 type InbodySummary = {
-  latest: {
-    measured_at: string;
-    weight: number | null; weight_prev: number | null;
-    bmi: number | null; bmi_prev: number | null;
-    body_fat_pct: number | null; body_fat_pct_prev: number | null;
-    muscle_mass: number | null; muscle_mass_prev: number | null;
-    visceral_fat: number | null; visceral_fat_prev: number | null;
-    metabolic_rate: number | null; metabolic_rate_prev: number | null;
-    body_age: number | null; body_age_prev: number | null;
-    total_body_water: number | null;
-    protein_mass: number | null;
-    mineral_mass: number | null;
-    muscle_segmental: Segmental | null;
-    fat_segmental: Segmental | null;
-  } | null;
+  records: InbodyRecord[];   // desc by measured_at；[0] = 最新
 };
 
 type Metric = {
@@ -37,7 +34,7 @@ type Metric = {
   prev: number | null;
   u: string;
   decimals: number;
-  downIsGood: boolean;   // 下降為好 → teal 上升 → orange
+  downIsGood: boolean;
 };
 
 export default function PatientInbodyPage() {
@@ -45,20 +42,43 @@ export default function PatientInbodyPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [segMode, setSegMode] = useState<"muscle" | "fat">("muscle");
+  const [idx, setIdx] = useState(0);  // 選第幾筆（0 = 最新）
 
   useEffect(() => {
-    fetchAPI<InbodySummary>("/inbody/me/summary?days=30")
-      .then(setData)
+    fetchAPI<InbodySummary>("/inbody/me/summary?days=365")
+      .then((d) => {
+        setData(d);
+        setIdx(0);  // 預設最新
+      })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   }, []);
 
+  const current = data?.records?.[idx] ?? null;
+  const prev = data?.records?.[idx + 1] ?? null;
+
+  const metrics = useMemo<Metric[]>(() => {
+    if (!current) return [];
+    return [
+      { zh: "體重",     en: "Weight",   v: current.weight,           prev: prev?.weight ?? null,           u: "kg",   decimals: 1, downIsGood: true  },
+      { zh: "BMI",     en: "BMI",       v: current.bmi,              prev: prev?.bmi ?? null,              u: "",     decimals: 1, downIsGood: true  },
+      { zh: "體脂率",   en: "Body Fat",  v: current.body_fat_pct,     prev: prev?.body_fat_pct ?? null,     u: "%",    decimals: 1, downIsGood: true  },
+      { zh: "骨骼肌",   en: "Muscle",    v: current.muscle_mass,      prev: prev?.muscle_mass ?? null,      u: "kg",   decimals: 1, downIsGood: false },
+      { zh: "內臟脂肪", en: "Visceral",  v: current.visceral_fat,     prev: prev?.visceral_fat ?? null,     u: "lvl",  decimals: 0, downIsGood: true  },
+      { zh: "基礎代謝", en: "BMR",       v: current.metabolic_rate,   prev: prev?.metabolic_rate ?? null,   u: "kcal", decimals: 0, downIsGood: false },
+      { zh: "身體年齡", en: "Body Age",  v: current.body_age,         prev: prev?.body_age ?? null,         u: "歲",   decimals: 0, downIsGood: true  },
+      { zh: "體內水分", en: "Water",     v: current.total_body_water, prev: prev?.total_body_water ?? null, u: "kg",   decimals: 1, downIsGood: false },
+      { zh: "蛋白質",   en: "Protein",   v: current.protein_mass,     prev: prev?.protein_mass ?? null,     u: "kg",   decimals: 1, downIsGood: false },
+      { zh: "無機鹽",   en: "Mineral",   v: current.mineral_mass,     prev: prev?.mineral_mass ?? null,     u: "kg",   decimals: 1, downIsGood: false },
+    ];
+  }, [current, prev]);
+
   if (loading) return <div className="text-gray-500 py-8 text-center text-sm">載入中…</div>;
   if (err) return <div className="bg-red-50 text-red-700 p-3 rounded text-sm">錯誤：{err}</div>;
-  if (!data?.latest) {
+  if (!current) {
     return (
       <div className="flex flex-col gap-3.5">
-        <Header date={null} />
+        <Header />
         <div className="bg-white rounded-2xl p-8 text-center">
           <div className="text-sm text-gray-500">尚無 InBody 紀錄</div>
           <div className="text-xs text-gray-400 mt-1">診所測量後會自動同步至此</div>
@@ -67,25 +87,62 @@ export default function PatientInbodyPage() {
     );
   }
 
-  const l = data.latest;
-  const metrics: Metric[] = [
-    { zh: "體重",     en: "Weight",   v: l.weight,            prev: l.weight_prev,         u: "kg",   decimals: 1, downIsGood: true  },
-    { zh: "BMI",     en: "BMI",       v: l.bmi,               prev: l.bmi_prev,            u: "",     decimals: 1, downIsGood: true  },
-    { zh: "體脂率",   en: "Body Fat",  v: l.body_fat_pct,      prev: l.body_fat_pct_prev,   u: "%",    decimals: 1, downIsGood: true  },
-    { zh: "骨骼肌",   en: "Muscle",    v: l.muscle_mass,       prev: l.muscle_mass_prev,    u: "kg",   decimals: 1, downIsGood: false },
-    { zh: "內臟脂肪", en: "Visceral",  v: l.visceral_fat,      prev: l.visceral_fat_prev,   u: "lvl",  decimals: 0, downIsGood: true  },
-    { zh: "基礎代謝", en: "BMR",       v: l.metabolic_rate,    prev: l.metabolic_rate_prev, u: "kcal", decimals: 0, downIsGood: false },
-    { zh: "身體年齡", en: "Body Age",  v: l.body_age,          prev: l.body_age_prev,       u: "歲",   decimals: 0, downIsGood: true  },
-    { zh: "體內水分", en: "Water",     v: l.total_body_water,  prev: null,                  u: "kg",   decimals: 1, downIsGood: false },
-    { zh: "蛋白質",   en: "Protein",   v: l.protein_mass,      prev: null,                  u: "kg",   decimals: 1, downIsGood: false },
-    { zh: "無機鹽",   en: "Mineral",   v: l.mineral_mass,      prev: null,                  u: "kg",   decimals: 1, downIsGood: false },
-  ];
-
-  const hasSegmental = !!(l.muscle_segmental || l.fat_segmental);
+  const hasSegmental = !!(current.muscle_segmental || current.fat_segmental);
+  const records = data?.records ?? [];
 
   return (
     <div className="flex flex-col gap-3.5">
-      <Header date={l.measured_at} />
+      <Header />
+
+      {/* 日期選擇器 —— 紀錄超過 1 筆才顯示 */}
+      {records.length > 1 && (
+        <div className="flex items-center gap-2 bg-white rounded-xl p-2.5">
+          <div className="flex flex-col">
+            <span className="text-[10px] font-mono text-gray-400 uppercase">Record</span>
+            <span className="text-[11px] text-gray-500">測量紀錄</span>
+          </div>
+          <select
+            value={idx}
+            onChange={(e) => setIdx(Number(e.target.value))}
+            className="ml-auto border rounded px-2 py-1.5 text-sm font-mono"
+          >
+            {records.map((r, i) => (
+              <option key={r.id} value={i}>
+                {r.measured_at.slice(0, 10)}{i === 0 ? "（最新）" : ""}
+              </option>
+            ))}
+          </select>
+          <div className="flex">
+            <button
+              onClick={() => setIdx(Math.min(records.length - 1, idx + 1))}
+              disabled={idx >= records.length - 1}
+              className="text-xs px-2 py-1 border rounded-l hover:bg-gray-50 disabled:opacity-30"
+              aria-label="prev"
+            >
+              ←
+            </button>
+            <button
+              onClick={() => setIdx(Math.max(0, idx - 1))}
+              disabled={idx === 0}
+              className="text-xs px-2 py-1 border-t border-b border-r rounded-r hover:bg-gray-50 disabled:opacity-30"
+              aria-label="next"
+            >
+              →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 日期 header */}
+      <div className="text-[11px] text-gray-500 font-mono">
+        {idx === 0 ? "LATEST · " : ""}
+        {current.measured_at.slice(0, 10).replace(/-/g, ".")}
+        {prev && (
+          <span className="ml-2 text-gray-400">
+            vs {prev.measured_at.slice(0, 10).replace(/-/g, ".")}
+          </span>
+        )}
+      </div>
 
       {/* Segmental body map */}
       <div className="bg-white rounded-2xl p-4">
@@ -115,10 +172,10 @@ export default function PatientInbodyPage() {
             </div>
           )}
         </div>
-        <BodyMap seg={segMode === "muscle" ? l.muscle_segmental : l.fat_segmental} />
+        <BodyMap seg={segMode === "muscle" ? current.muscle_segmental : current.fat_segmental} />
       </div>
 
-      {/* Metric grid (展開到 10 格，適應 2-col) */}
+      {/* Metric grid */}
       <div className="grid grid-cols-2 gap-2.5">
         {metrics.map((m) => <MetricCard key={m.en} m={m} />)}
       </div>
@@ -126,13 +183,10 @@ export default function PatientInbodyPage() {
   );
 }
 
-function Header({ date }: { date: string | null }) {
+function Header() {
   return (
     <div>
       <div className="text-[22px] font-bold tracking-tight">InBody 身體組成</div>
-      <div className="text-[11px] text-gray-500 font-mono">
-        {date ? `LATEST · ${date.slice(0, 10).replace(/-/g, ".")}` : "NO DATA"}
-      </div>
     </div>
   );
 }

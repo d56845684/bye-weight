@@ -20,6 +20,7 @@ from deps import current_patient, current_user
 from models.inbody import InbodyPending, InbodyRecord
 from models.patient import Patient
 from schemas.inbody import (
+    InbodyFullRecord,
     InbodyLatest,
     InbodyPendingItem,
     InbodyRecordItem,
@@ -143,6 +144,28 @@ async def inbody_summary(
 
     # series 升冪排（前端 x 軸左到右 = 時間軸）
     asc = list(reversed(rows))
+
+    # records 時序 desc，前端下拉選單 + 切換 delta 用；欄位跟 latest 一致（不含 *_prev）。
+    records_desc = [
+        InbodyFullRecord(
+            id=r.id,
+            measured_at=r.measured_at,
+            weight=_num(r.weight),
+            bmi=_num(r.bmi),
+            body_fat_pct=_num(r.body_fat_pct),
+            muscle_mass=_num(r.muscle_mass),
+            visceral_fat=r.visceral_fat,
+            metabolic_rate=_num(r.metabolic_rate),
+            body_age=r.body_age,
+            total_body_water=_num(r.total_body_water),
+            protein_mass=_num(r.protein_mass),
+            mineral_mass=_num(r.mineral_mass),
+            muscle_segmental=_seg(r.muscle_segmental),
+            fat_segmental=_seg(r.fat_segmental),
+        )
+        for r in rows
+    ]
+
     return InbodySummary(
         latest=latest_obj,
         series=InbodySeries(
@@ -151,6 +174,7 @@ async def inbody_summary(
             body_fat_pct=[float(r.body_fat_pct) if r.body_fat_pct is not None else None for r in asc],
             muscle_mass=[float(r.muscle_mass) if r.muscle_mass is not None else None for r in asc],
         ),
+        records=records_desc,
     )
 
 
