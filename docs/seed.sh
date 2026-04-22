@@ -208,25 +208,43 @@ INSERT INTO patient_goals
     (:bob_pid,   :tid, 72.0, 22.0, 1800, 45, 30, 25, CURRENT_DATE - 30, :nutri_uid, '[SEED] 代謝改善 + 肌肉量維持'),
     (:carol_pid, :tid, 54.0, 23.0, 1400, 50, 25, 25, CURRENT_DATE - 30, :nutri_uid, '[SEED] 維持期');
 
--- InBody：每位 8 週每週量一次，漸進式變化
+-- InBody：每位 8 週每週量一次，漸進式變化。
+-- 分部位 (muscle_segmental / fat_segmental) 用 JSONB 存 {la,ra,tr,ll,rl}，
+-- 採臨床常見比例：骨骼肌 5/5/50/20/20 %；脂肪 7/7/54/16/16 %。
+-- 這樣 /patient/inbody 的 BodyMap 會有可視化資料（否則只顯示「尚無分部位資料」）。
 INSERT INTO inbody_records
     (patient_id, uploaded_by, measured_at,
      weight, bmi, body_fat_pct, muscle_mass, visceral_fat, metabolic_rate,
      body_age, total_body_water, protein_mass, mineral_mass,
+     muscle_segmental, fat_segmental,
      match_status, tenant_id)
 SELECT p.pid,
        :staff_eid,
        NOW() - (w * INTERVAL '7 days'),
-       ROUND((p.w0 - w * 0.4)::numeric, 1),
+       ROUND((p.w0 - w * 0.4)::numeric, 1)   AS wt,
        ROUND((p.b0 - w * 0.12)::numeric, 1),
-       ROUND((p.f0 - w * 0.3)::numeric, 1),
-       ROUND((p.m0 + w * 0.05)::numeric, 1),
+       ROUND((p.f0 - w * 0.3)::numeric, 1)   AS fpct,
+       ROUND((p.m0 + w * 0.05)::numeric, 1)  AS mm,
        GREATEST(4, (p.vf0 - w / 2)::int),
        (p.mr0 - w * 5)::int,
        GREATEST(20, (p.ba0 - w / 2)::int),
        ROUND((p.w0 * 0.55 - w * 0.1)::numeric, 1),
        ROUND((p.w0 * 0.16 - w * 0.02)::numeric, 1),
        ROUND((p.w0 * 0.045 - w * 0.005)::numeric, 1),
+       jsonb_build_object(
+           'la', ROUND(((p.m0 + w * 0.05) * 0.05)::numeric, 1),
+           'ra', ROUND(((p.m0 + w * 0.05) * 0.05)::numeric, 1),
+           'tr', ROUND(((p.m0 + w * 0.05) * 0.50)::numeric, 1),
+           'll', ROUND(((p.m0 + w * 0.05) * 0.20)::numeric, 1),
+           'rl', ROUND(((p.m0 + w * 0.05) * 0.20)::numeric, 1)
+       ),
+       jsonb_build_object(
+           'la', ROUND(((p.w0 - w * 0.4) * (p.f0 - w * 0.3) / 100 * 0.07)::numeric, 1),
+           'ra', ROUND(((p.w0 - w * 0.4) * (p.f0 - w * 0.3) / 100 * 0.07)::numeric, 1),
+           'tr', ROUND(((p.w0 - w * 0.4) * (p.f0 - w * 0.3) / 100 * 0.54)::numeric, 1),
+           'll', ROUND(((p.w0 - w * 0.4) * (p.f0 - w * 0.3) / 100 * 0.16)::numeric, 1),
+           'rl', ROUND(((p.w0 - w * 0.4) * (p.f0 - w * 0.3) / 100 * 0.16)::numeric, 1)
+       ),
        'matched',
        :tid
 FROM (VALUES
