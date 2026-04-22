@@ -114,6 +114,28 @@ class InbodySeries(BaseModel):
     muscle_mass: list[float | None]
 
 
+class InbodyFullRecord(BaseModel):
+    """完整 record 欄位，給病患 Body tab 切換歷史用。
+    跟 InbodyLatest 差別：沒有 *_prev（選到哪一筆，delta 由前端用 records[index+1] 算）。"""
+    id: int
+    measured_at: datetime
+    weight: float | None = None
+    bmi: float | None = None
+    body_fat_pct: float | None = None
+    muscle_mass: float | None = None
+    visceral_fat: int | None = None
+    metabolic_rate: float | None = None
+    body_age: int | None = None
+    total_body_water: float | None = None
+    protein_mass: float | None = None
+    mineral_mass: float | None = None
+    muscle_segmental: Segmental | None = None
+    fat_segmental: Segmental | None = None
+
+
 class InbodySummary(BaseModel):
     latest: InbodyLatest | None = None
     series: InbodySeries
+    # 時序 desc（最新在 [0]），前端下拉選單 + 切換 delta 用。
+    # 不超過 summary 的 days limit；延伸歷史走 /inbody/history。
+    records: list[InbodyFullRecord] = []
