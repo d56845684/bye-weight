@@ -11,7 +11,7 @@
 #   docs/seed.sh reset     # clean 再 apply
 #   docs/seed.sh status    # 顯示 seed 租戶的資料統計
 #
-# 所有 seed 帳號預設密碼：demo123
+# 所有 seed 帳號共用一組隨機密碼（apply 完會印出來，也可用 SEED_PW=xxx 覆蓋）。
 #   admin@seed.test   role=admin          → 進 /admin/login
 #   nutri@seed.test   role=nutritionist
 #   staff@seed.test   role=staff
@@ -25,7 +25,10 @@ PG_CONTAINER="${PG_CONTAINER:-bye-weight-postgres-1}"
 AUTH_CONTAINER="${AUTH_CONTAINER:-bye-weight-auth_service-1}"
 SEED_TID=100
 SEED_SLUG="seed-clinic"
-SEED_PW="demo123"
+
+# 密碼預設隨機（16 hex chars），避免固定密碼外洩或誤進正式環境。
+# 需要固定值（CI / 文件範例）時以 SEED_PW=xxx 覆蓋即可。
+SEED_PW="${SEED_PW:-$(openssl rand -hex 8)}"
 
 psql_auth() {
     docker exec -i "$PG_CONTAINER" \
