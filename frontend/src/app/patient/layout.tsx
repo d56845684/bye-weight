@@ -61,6 +61,7 @@ export default function PatientLayout({
               <Link
                 key={t.href}
                 href={t.href}
+                prefetch={false}
                 className={`flex flex-col items-center gap-0.5 px-3 py-1 text-[10px] font-semibold transition-colors ${
                   active ? "text-teal-600" : "text-gray-400"
                 }`}
