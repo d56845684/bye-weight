@@ -2,24 +2,28 @@
 # 開發環境 — 兩種用法
 # ============================================================
 #
-# 用法 A：只起 DB（推薦，服務在本機跑，有 hot-reload）
+# 對外 port 原則：**只有 nginx 對外**（公網 / LAN 可達）。其他服務只在
+# Docker internal network 互通，host 看不到。為保留 mode A 的 DX，postgres
+# 跟 redis 仍綁 port 但限制在 127.0.0.1 loopback（host 本機 psql/redis-cli
+# 可以連、外網打不到）。
+#
+# 用法 A：只起 DB（服務在本機跑，有 hot-reload）
 #   docker compose -f docker-compose.dev.yml up -d
-#   各服務讀自己的 .env（hostname=localhost），直接跑：
-#     cd auth_service && source .env && go run .
-#     cd main_service && source .env && uvicorn main:app --reload --port 8002
-#     cd frontend && pnpm dev -p 3001
+#   psql 連：  PGPASSWORD=dev psql -h 127.0.0.1 -p 5433 -U postgres
+#   起服務：  cd auth_service && source .env && go run .
+#            cd main_service && source .env && uvicorn main:app --reload --port 8002
+#            cd frontend && pnpm dev -p 3001
 #
 # 用法 B：全部放 Docker（不想裝 Go/Python/Node）
 #   docker compose -f docker-compose.dev.yml --profile full up -d
-#   各服務讀 .env.docker（hostname=Docker service name）
+#   對外只剩：http://localhost:8080  （nginx 做所有路由分派）
 #
-# Port mapping（避免與 teaching-platform 衝突）：
-#   postgres  5433 → 5432
-#   redis     6380 → 6379
-#   nginx     8080 → 80
-#   auth      8003 → 8001
-#   main      8002 → 8000
-#   frontend  3001 → 3000
+# Port mapping：
+#   postgres       127.0.0.1:5433 → 5432    （dev loopback；容器內部仍用 5432）
+#   redis          127.0.0.1:6380 → 6379    （同上）
+#   nginx          0.0.0.0:8080 → 80         （唯一對外）
+#   auth / main / kuji_* / frontend / kuji_frontend:
+#     不 expose，只在 Docker network 內 nginx 能打到
 # ============================================================
 
 services:
@@ -27,8 +31,9 @@ services:
   # ── 基礎設施（兩種用法都起）────────────────────
   postgres:
     image: postgres:15-alpine
+    # loopback 綁定：host 端 127.0.0.1 可連（mode A dev），外網 / LAN 不可達
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     environment:
       POSTGRES_PASSWORD: dev
     volumes:
@@ -43,15 +48,15 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
 
-  # ── 應用服務（--profile full 才起）─────────────
+  # ── 應用服務（--profile full 才起；不 expose 任何 port）──
   auth_service:
     build:
       context: ./auth_service
       dockerfile: Dockerfile
-    ports:
-      - "8003:8001"
+    expose:
+      - "8001"
     env_file: ./auth_service/.env.docker
     depends_on:
       postgres:
@@ -64,8 +69,8 @@ services:
     build:
       context: ./main_service
       dockerfile: Dockerfile
-    ports:
-      - "8002:8000"
+    expose:
+      - "8000"
     env_file: ./main_service/.env.docker
     depends_on:
       postgres:
@@ -74,17 +79,41 @@ services:
         condition: service_started
     profiles: ["full"]
 
+  kuji_backend:
+    build:
+      context: ./kuji_backend
+      dockerfile: Dockerfile
+    expose:
+      - "8000"
+    env_file: ./kuji_backend/.env.docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["full"]
+
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports:
-      - "3001:3000"
+    expose:
+      - "3000"
     env_file: ./frontend/.env.docker
     depends_on:
       - main_service
     profiles: ["full"]
 
+  kuji_frontend:
+    build:
+      context: ./kuji_frontend
+      dockerfile: Dockerfile
+    expose:
+      - "3000"
+    env_file: ./kuji_frontend/.env.docker
+    depends_on:
+      - kuji_backend
+    profiles: ["full"]
+
+  # ── 唯一對外入口 ──────────────────────────────
   nginx:
     image: nginx:alpine
     ports:
@@ -94,7 +123,9 @@ services:
     depends_on:
       - auth_service
       - main_service
+      - kuji_backend
       - frontend
+      - kuji_frontend
     profiles: ["full"]
 
 volumes:
