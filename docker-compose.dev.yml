@@ -22,7 +22,7 @@
 #   postgres       127.0.0.1:5433 → 5432    （dev loopback；容器內部仍用 5432）
 #   redis          127.0.0.1:6380 → 6379    （同上）
 #   nginx          0.0.0.0:8080 → 80         （唯一對外）
-#   auth / main / kuji_* / frontend / kuji_frontend:
+#   auth / main / frontend:
 #     不 expose，只在 Docker network 內 nginx 能打到
 # ============================================================
 
@@ -79,18 +79,6 @@ services:
         condition: service_started
     profiles: ["full"]
 
-  kuji_backend:
-    build:
-      context: ./kuji_backend
-      dockerfile: Dockerfile
-    expose:
-      - "8000"
-    env_file: ./kuji_backend/.env.docker
-    depends_on:
-      postgres:
-        condition: service_healthy
-    profiles: ["full"]
-
   frontend:
     build:
       context: ./frontend
@@ -100,17 +88,6 @@ services:
     env_file: ./frontend/.env.docker
     depends_on:
       - main_service
-    profiles: ["full"]
-
-  kuji_frontend:
-    build:
-      context: ./kuji_frontend
-      dockerfile: Dockerfile
-    expose:
-      - "3000"
-    env_file: ./kuji_frontend/.env.docker
-    depends_on:
-      - kuji_backend
     profiles: ["full"]
 
   # ── 唯一對外入口 ──────────────────────────────
@@ -123,9 +100,7 @@ services:
     depends_on:
       - auth_service
       - main_service
-      - kuji_backend
       - frontend
-      - kuji_frontend
     profiles: ["full"]
 
 volumes:
