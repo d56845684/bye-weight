@@ -5,11 +5,20 @@
 # 前置：docker compose -f docker-compose.dev.yml --profile full up -d
 # 用法：bash main_service/tests/tenant_isolation.sh
 #
-# 會在 auth_db / app_db 留下測試資料（slug iso-test-a / iso-test-b），重跑前會清掉。
+# 設計取向：
+#   - main_service 不直連 auth_db；所有 auth 端的建立 / 清理都透過 admin API。
+#     （decoupling 原則：service 邊界內才直接 psql）
+#   - app_db 的 patients / RLS 測試本來就是主題，psql_app 保留。
+#   - 租戶 slug 帶 timestamp 避免重跑衝突；尾端透過 admin API 軟刪租戶 + 硬刪
+#     自己建的 patients / food_logs；users 因 admin API 只做 soft-delete，留在 DB
+#     但 active=false 無法再被使用。
 
 set -euo pipefail
 
 BASE="${BASE:-http://localhost:8080}"
+STAMP=$(date +%s)
+SLUG_A="iso-test-a-$STAMP"
+SLUG_B="iso-test-b-$STAMP"
 
 SUPER_COOKIE=$(mktemp)
 COOKIE_A=$(mktemp)
@@ -37,44 +46,24 @@ j() {
     python3 -c "import sys,json; d=json.load(sys.stdin); print(d$1)"
 }
 
-psql_auth() {
-    # -tA：tuples-only + unaligned；head -1 去掉 INSERT/UPDATE 狀態訊息
-    docker compose -f docker-compose.dev.yml exec -T postgres \
-        psql -U postgres -d auth_db -tA -c "$1" | head -1
-}
-
 psql_app() {
     docker compose -f docker-compose.dev.yml exec -T postgres \
         psql -U postgres -d app_db -tA -c "$1" | head -1
 }
-
-# ── 清掉前一次跑的殘留 ─────────────────────────
-echo "── 清理舊測試資料 ──"
-psql_app "DELETE FROM food_logs       WHERE tenant_id IN (SELECT id FROM (VALUES (0)) _(id) UNION SELECT id FROM patients WHERE name LIKE 'Iso %');" >/dev/null || true
-# 先抓 tenant id（若存在）再連鎖刪除
-tA_existing=$(psql_auth "SELECT id FROM tenants WHERE slug='iso-test-a';" || echo "")
-tB_existing=$(psql_auth "SELECT id FROM tenants WHERE slug='iso-test-b';" || echo "")
-for t in "$tA_existing" "$tB_existing"; do
-    [[ -z "$t" ]] && continue
-    psql_app "DELETE FROM food_logs WHERE tenant_id=$t;" >/dev/null || true
-    psql_app "DELETE FROM patients  WHERE tenant_id=$t;" >/dev/null || true
-    psql_auth "DELETE FROM users   WHERE tenant_id=$t;" >/dev/null || true
-    psql_auth "DELETE FROM tenants WHERE id=$t;" >/dev/null || true
-done
 
 # ── 以 super_admin 身份登入做後台設定 ──────────
 echo "── super_admin 登入 ──"
 curl -s -c "$SUPER_COOKIE" -X POST "$BASE/auth/v1/dev-login" \
     -H "Content-Type: application/json" -d '{}' >/dev/null
 
-# ── 建兩個 tenant ──────────────────────────────
-echo "── 建立 tenant iso-test-a / iso-test-b ──"
+# ── 建兩個 tenant（slug 帶 timestamp，不會撞）──
+echo "── 建立 tenant $SLUG_A / $SLUG_B ──"
 tA=$(curl -s -b "$SUPER_COOKIE" -X POST "$BASE/auth/v1/admin/tenants" \
     -H "Content-Type: application/json" \
-    -d '{"slug":"iso-test-a","name":"Iso Test A"}' | j "['id']")
+    -d "{\"slug\":\"$SLUG_A\",\"name\":\"Iso Test A\"}" | j "['id']")
 tB=$(curl -s -b "$SUPER_COOKIE" -X POST "$BASE/auth/v1/admin/tenants" \
     -H "Content-Type: application/json" \
-    -d '{"slug":"iso-test-b","name":"Iso Test B"}' | j "['id']")
+    -d "{\"slug\":\"$SLUG_B\",\"name\":\"Iso Test B\"}" | j "['id']")
 echo "  tenant A id=$tA, tenant B id=$tB"
 
 # ── 各 tenant 建一個 clinic-admin user（未綁 LINE，但能以 dev-login 模擬）──
@@ -142,6 +131,8 @@ psql_count() {
 }
 
 echo "── 測試 7：RLS 本身 — 以 app_user + tenant A 環境直接 SELECT ──"
+# 以下 3 支測試本質上是驗 PostgreSQL RLS 行為（app_db 自己的功能），
+# 必須走 psql，沒有對應 HTTP API。這是 app_db 內部測試，沒違反 service 解耦。
 visible=$(psql_count "
     BEGIN;
     SET LOCAL ROLE app_user;
@@ -188,12 +179,20 @@ visible_all=$(psql_count "
 assert_eq "bypass_rls=true 時兩筆都見（for 排程）" "2" "$visible_all"
 
 # ── 清掉測試資料 ───────────────────────────────
+# app_db 的 patients / food_logs 是本服務的東西，用 psql_app 清。
+# auth_db 端透過 admin API：user soft-delete + tenant 停用（slug 帶 timestamp
+# 所以舊 row 留著也不會跟下次衝突，免去 auth_db 直接 DELETE 的需要）。
 echo
 echo "── 清掉測試資料 ──"
 psql_app "DELETE FROM food_logs WHERE tenant_id IN ($tA, $tB);" >/dev/null || true
 psql_app "DELETE FROM patients  WHERE tenant_id IN ($tA, $tB);" >/dev/null
-psql_auth "DELETE FROM users    WHERE tenant_id IN ($tA, $tB);" >/dev/null
-psql_auth "DELETE FROM tenants  WHERE id IN ($tA, $tB);" >/dev/null
+
+for uid in "$uAdmA" "$uAdmB"; do
+    curl -s -b "$SUPER_COOKIE" -X DELETE "$BASE/auth/v1/admin/users/$uid" >/dev/null || true
+done
+for tid in "$tA" "$tB"; do
+    curl -s -b "$SUPER_COOKIE" -X DELETE "$BASE/auth/v1/admin/tenants/$tid" >/dev/null || true
+done
 
 echo
 echo "── 結果 ──"
