@@ -29,6 +29,37 @@ LINE 醫療病患追蹤平台 MVP，**前後端分離 + Auth 微服務 + Nginx a
 └──────────────── Cloud SQL (1 instance, 2 DB) ────┘
 ```
 
+```mermaid
+graph TB
+    Client["Client<br/>LIFF / Browser"]
+    LB["Cloud LB（TLS）"]
+    Client --> LB --> Nginx
+
+    subgraph VM["GCE VM（Docker Compose）"]
+        Nginx[":80 Nginx<br/>auth_request 攔截"]
+        Auth["auth_service :8001<br/>Go + chi + huma"]
+        Main["main_service :8000<br/>FastAPI"]
+        FE["frontend :3000<br/>Next.js"]
+        Redis[("Redis<br/>blacklist + cache")]
+    end
+
+    Nginx -.->|"/auth/verify（sub_request）"| Auth
+    Nginx -->|"/auth/v1/*"| Auth
+    Nginx -->|"/api/v1/*（IAM checked）"| Main
+    Nginx -->|"/admin /patient /staff ..."| FE
+
+    Auth --> Redis
+    Main --> Redis
+
+    Auth --> AuthDB[("auth_db<br/>Cloud SQL")]
+    Main --> AppDB[("app_db<br/>Cloud SQL")]
+
+    classDef svc fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef store fill:#fff3e0,stroke:#ef6c00,color:#e65100
+    class Auth,Main,FE,Nginx svc
+    class Redis,AuthDB,AppDB store
+```
+
 四個 deployable unit，各自的職責切得很乾淨：
 
 | 服務 | 語言 / 框架 | 主職責 | 不該做的事 |
@@ -59,6 +90,61 @@ tenants ───┬─── users(tenant_id) ── roles
                                                               policies(JSONB document)
                                                                           │
                                                                   role_policies
+```
+
+```mermaid
+erDiagram
+    tenants  ||--o{ users           : "1:N"
+    tenants  ||--o{ tenant_services : "subscribes"
+    services ||--o{ tenant_services : "available to"
+    services ||--o{ action_mappings : "defines"
+    roles    ||--o{ users           : "assigned"
+    roles    ||--o{ role_policies   : "binds"
+    policies ||--o{ role_policies   : "bound by"
+
+    tenants {
+        int    id     PK "0=system"
+        string slug   UK
+        bool   active
+    }
+    users {
+        int    id           PK
+        string line_uuid    UK
+        string google_email UK
+        int    role_id      FK
+        int    tenant_id    FK
+        bool   active
+    }
+    roles {
+        int    id   PK
+        string name UK "patient / staff / nutritionist / admin / super_admin"
+    }
+    services {
+        int    id     PK
+        string name   UK "main / auth / frontend"
+        string prefix    "/api/v1 / /auth/v1"
+    }
+    action_mappings {
+        int    id                PK
+        int    service_id        FK
+        string http_method
+        string url_pattern          "/visits/{id}/medications"
+        string action               "main:visit:read"
+        string resource_template    "tenant/$tenant_id/user/$user_id/visit/$id"
+    }
+    policies {
+        int    id       PK
+        string name     UK
+        jsonb  document    "AWS IAM-style statements"
+    }
+    role_policies {
+        int role_id   FK
+        int policy_id FK
+    }
+    tenant_services {
+        int tenant_id  FK
+        int service_id FK
+    }
 ```
 
 - `tenants.id = 0` 保留給 system tenant(super_admin 專用);其他自增
@@ -92,6 +178,49 @@ cookie(access_token)
   → SubstituteResource(template, sub, pathAttrs)
   → engine.Check(sub, action, resource)
   → 200 + 注入 X-User-Id / X-User-Role / X-Tenant-Id
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant N as Nginx
+    participant A as auth_service
+    participant R as Redis
+    participant DB as auth_db
+    participant M as main_service
+
+    C->>N: GET /api/v1/inbody/history<br/>Cookie: access_token=JWT
+
+    Note over N: auth_request /auth/verify
+    N->>A: GET /auth/verify<br/>X-Original-Method, X-Original-URI, Cookie
+
+    A->>A: Parse JWT → jti, user_id, role, tenant_id
+    A->>R: EXISTS auth:blacklist:{jti}
+    R-->>A: 0
+    A->>R: IsUserActive / IsTenantActive
+    alt 快取命中
+        R-->>A: true / true
+    else 快取 miss
+        R->>DB: SELECT active FROM users / tenants
+        DB-->>R: rows
+        R-->>A: true / true
+    end
+
+    A->>A: ResolveAction(GET, /inbody/history)
+    Note over A: action  = main:inbody:read<br/>resource = tenant/3/user/42/inbody
+    A->>A: engine.Check(sub, action, resource)
+    Note over A: policy「patient-self-access」allow ✓
+
+    A-->>N: 200<br/>X-User-Id:42, X-User-Role:patient, X-Tenant-Id:3
+
+    Note over N: proxy_set_header 強制覆蓋<br/>client 帶來的同名 header 被丟掉
+    N->>M: GET /inbody/history<br/>X-User-Id:42, X-Tenant-Id:3
+
+    M->>M: current_user / current_patient
+    M->>M: SELECT ... WHERE tenant_id=3<br/>AND auth_user_id=42<br/>（RLS 再過一層）
+    M-->>N: 200 JSON
+    N-->>C: 200 JSON
 ```
 
 另有 `VerifyPage`(給 nginx 在前端頁面用),**只檢登入態**、不跑 action mapping,因為頁面路由不適合算具體權限。
@@ -145,6 +274,37 @@ cookie(access_token)
 1. 身份映射(auth user → patient profile)
 2. **Tenant defense-in-depth**:每個 query 都加 `tenant_id == user["tenant_id"]` WHERE
 3. RLS 補強:`alembic/0003_rls` 開了 PostgreSQL Row-Level Security,連線時 `SET LOCAL ROLE app_user` + `app.current_tenant`,跨租戶查詢需明確 `rls_bypass()` context manager(僅 super_admin)
+
+```mermaid
+flowchart TB
+    Req["Client request<br/>GET /api/v1/inbody/123"] --> L1
+
+    subgraph L1["Layer 1 — IAM resource pattern（auth_service）"]
+        L1a["resource_template:<br/>main:tenant/$auth:tenant_id/user/$auth:user_id/inbody/$path.id"]
+        L1b["跨 tenant URL 偽造 → 403<br/>不會進到 main_service"]
+    end
+
+    L1 -->|"allow（通過）"| L2
+
+    subgraph L2["Layer 2 — 應用層 WHERE（main_service）"]
+        L2a["每個 query 都加<br/>.where(tenant_id == user[tenant_id])"]
+        L2b["IAM 失誤漏放也撈不到別租戶"]
+    end
+
+    L2 -->|"撈到列"| L3
+
+    subgraph L3["Layer 3 — PostgreSQL RLS"]
+        L3a["連線開頭 SET LOCAL app.current_tenant"]
+        L3b["RLS policy:<br/>USING (tenant_id = current_setting(...))"]
+        L3c["super_admin 跨租戶需 rls_bypass() 顯式進入"]
+    end
+
+    L3 --> OK["✓ 回傳資料"]
+
+    style L1 fill:#e8f5e9,stroke:#2e7d32
+    style L2 fill:#fff3e0,stroke:#ef6c00
+    style L3 fill:#fce4ec,stroke:#c2185b
+```
 
 ### 3.3 路由分層範例(`routers/inbody.py`)
 
