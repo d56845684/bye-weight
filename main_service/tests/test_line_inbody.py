@@ -82,27 +82,8 @@ async def test_staff_upload_matched(client, monkeypatch, reply_spy):
     assert "已為 王小明" in _text_sent(reply_spy)
 
 
-@pytest.mark.asyncio
-async def test_patient_role_blocked(client, monkeypatch, reply_spy):
-    _bypass_signature(monkeypatch)
-    monkeypatch.setattr(
-        "routers.line_webhook.resolve_sender",
-        AsyncMock(return_value=LineSender(
-            user_id=5, role="patient", tenant_id=1, display_name="病患")),
-    )
-    dl_spy = AsyncMock(return_value=b"jpg")
-    ingest_spy = AsyncMock()
-    monkeypatch.setattr("routers.line_webhook.download_content", dl_spy)
-    monkeypatch.setattr("routers.line_webhook.ingest_inbody", ingest_spy)
-
-    resp = await client.post("/line/webhook",
-                             content=json.dumps(_image_event()).encode(),
-                             headers={"X-Line-Signature": "x"})
-
-    assert resp.status_code == 200
-    dl_spy.assert_not_called()
-    ingest_spy.assert_not_called()
-    assert "無權" in _text_sent(reply_spy)
+# 註：patient role 不再被擋。patient → food 分支由 test_line_food.py 覆蓋；
+# 其他不允許角色（super_admin 等）的拒絕在 test_line_food.py::test_super_admin_rejected 驗。
 
 
 @pytest.mark.asyncio
