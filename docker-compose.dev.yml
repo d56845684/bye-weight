@@ -23,8 +23,13 @@ services:
   # ── 基礎設施（兩種用法都起）────────────────────
   postgres:
     image: postgres:15-alpine
+    # server timezone 設台灣：讓 DB NOW()（稽核 created_at/updated_at）跟
+    # main_service 的 logged_at（container 也跑 Asia/Taipei）對齊，同一 row 不差 8 小時。
+    # -c 在 server 啟動時強制 timezone GUC（postgres 自帶 tzdata，不依賴 OS / 既有 volume）。
+    command: ["postgres", "-c", "timezone=Asia/Taipei"]
     environment:
       POSTGRES_PASSWORD: dev
+      TZ: Asia/Taipei
     volumes:
       - bw_pg_data:/var/lib/postgresql/data
       - ./sql/init-dev.sql:/docker-entrypoint-initdb.d/init-dev.sql:ro
