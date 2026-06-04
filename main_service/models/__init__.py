@@ -4,6 +4,7 @@ from models.food_log import FoodLog
 from models.food_log_image import FoodLogImage
 from models.visit import Visit, Medication
 from models.notification import NotificationRule, NotificationLog
+from models.blood_test import BloodTestReport
 
 __all__ = [
     "Patient", "LineBinding", "Employee",
@@ -11,4 +12,5 @@ __all__ = [
     "FoodLog", "FoodLogImage",
     "Visit", "Medication",
     "NotificationRule", "NotificationLog",
+    "BloodTestReport",
 ]
