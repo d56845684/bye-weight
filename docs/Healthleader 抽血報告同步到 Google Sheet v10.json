@@ -1,0 +1,971 @@
+{
+  "name": "Healthleader 抽血報告同步到 Google Sheet v10",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "7bb42055-b266-4f91-9f30-78e2af477eca",
+      "name": "手動觸發",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        31696,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1M2SzVfAM8I9RnuTj6_nE9Iawn9obJexo2xHl_Lyf1eQ",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "客戶清單",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "8239aaf1-f6d5-4b92-b5c8-e007153f4bf1",
+      "name": "0. Read Client List",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        31904,
+        6528
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "H03DTZFclAXelmuf",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://manage.healthleader.com.tw/Account/Login",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "86446df1-928a-421c-9b2d-e2974a66a777",
+      "name": "1. GET Login Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        31904,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const html = $input.first().json.data || $input.first().json.body || '';\nconst match = html.match(/name=\"__RequestVerificationToken\".*?value=\"([^\"]+)\"/);\nconst token = match ? match[1] : '';\n\nconst headers = $input.first().json.headers || {};\nconst cookies = headers['set-cookie'] || [];\nconst cookieStr = Array.isArray(cookies)\n  ? cookies.map(c => c.split(';')[0]).join('; ')\n  : (typeof cookies === 'string' ? cookies.split(';')[0] : '');\n\nreturn [{ json: { token, cookies: cookieStr } }];"
+      },
+      "id": "673c18e7-ce40-43a8-8076-0b56c3f927ce",
+      "name": "2. Extract CSRF Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32128,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://manage.healthleader.com.tw/Account/Login",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{ $json.cookies }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/x-www-form-urlencoded",
+        "body": "=Account={{ $vars.HL_ACCOUNT }}&HospitalNo={{ $vars.HL_HOSPITAL_NO }}&Password={{ $vars.HL_PASSWORD }}&__RequestVerificationToken={{ $json.token }}",
+        "options": {
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "d77db05b-ddf4-4800-9fef-bc7a66a10dff",
+      "name": "3. POST Login",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        32352,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prevCookies = $('2. Extract CSRF Token').first().json.cookies;\nconst resp = $input.first().json;\n\nlet newCookieStr = '';\nif (resp.headers && resp.headers['set-cookie']) {\n  const sc = resp.headers['set-cookie'];\n  newCookieStr = Array.isArray(sc)\n    ? sc.map(c => c.split(';')[0]).join('; ')\n    : sc.split(';')[0];\n}\n\nconst allCookies = newCookieStr\n  ? prevCookies + '; ' + newCookieStr\n  : prevCookies;\n\nreturn [{ json: { sessionCookies: allCookies } }];"
+      },
+      "id": "345aa227-f355-45bd-8d42-9af4a98ce3f5",
+      "name": "4. Extract Session Cookie",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32576,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 讀取客戶清單，為每位病人建立一個 item（含 sessionCookies + MRNo）\nconst sessionCookies = $input.first().json.sessionCookies;\nconst clientItems = $('0. Read Client List').all();\nconst results = [];\nconst seen = new Set();\n\nfor (const item of clientItems) {\n  const settingName = String(item.json['設定名稱'] || '').trim();\n  const mr = String(item.json['院區病歷號'] || '').trim();\n  if (!settingName || !mr) continue;\n  const realName = settingName.replace(/[A-Za-z]\\d+$/, '').trim();\n  if (!realName) continue;\n  // 用院區病歷號去重（同一病人可能在清單出現多次）\n  if (seen.has(mr)) continue;\n  seen.add(mr);\n  // 從院區病歷號提取院區代碼和病歷號\n  const areaMatch = mr.match(/^([A-Za-z]+)(\\d+)$/);\n  const areaCode = areaMatch ? areaMatch[1] : '';\n  const mrNo = areaMatch ? areaMatch[2] : mr;\n  results.push({ json: {\n    realName,\n    院區病歷號: mr,\n    areaCode,\n    mrNo,\n    sessionCookies\n  }});\n}\n\nreturn results;"
+      },
+      "id": "907cf083-42c1-4370-883c-91fec51b255e",
+      "name": "4.5 Split Client Names",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32784,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://manage.healthleader.com.tw/UPL/ReleaseReport/GetDataV3",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{ $json.sessionCookies }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/x-www-form-urlencoded",
+        "body": "=draw=1&start=0&length=200&IsShowNone=false&IsShowOk=true&IsRRSort=true&IsPrivacyProtection=false&IsSisan=false&DetectKind02=false&DetectKind03=false&CustomerName=&Name=&DetectDate%5B0%5D=2013-12-01&DetectDate%5B1%5D={{ $now.toFormat('yyyy-MM-dd') }}&MRNo={{ $json.mrNo }}&DetectNo=&IDNo=&Birthday=",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 2000
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "c5cfc535-6dc9-45cb-8fe5-4ca44889328f",
+      "name": "5. GET Report List (per patient)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        33008,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 將每位病人的 API 回應展開成個別報告 items\nfunction strip(s) { return String(s || '').replace(/<[^>]*>/g, '').trim(); }\n\nconst items = $input.all();\nconst prevItems = $('4.5 Split Client Names').all();\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const resp = items[i].json;\n  const prev = prevItems[i].json;\n  const data = resp.data || [];\n  if (!Array.isArray(data)) continue;\n\n  for (const report of data) {\n    const reportName = strip(report.Name);\n    results.push({ json: {\n      ID: report.ID,\n      CustomerName: strip(report.CustomerName),\n      Name: reportName,\n      MRNo: strip(report.MRNo),\n      DetectDate: strip(report.DetectDate),\n      IDNo: strip(report.IDNo),\n      DetectNo: strip(report.DetectNo),\n      院區病歷號: prev.院區病歷號 || '',\n      sessionCookies: prev.sessionCookies\n    }});\n  }\n}\n\nreturn results;"
+      },
+      "id": "12a5bc67-593b-4224-9c4b-37fd052150a3",
+      "name": "6. Flatten Reports",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        33232,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://manage.healthleader.com.tw/UPL/ReleaseReport/ReportPartial/TY/{{ $json.ID }}/true/true",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{ $json.sessionCookies }}"
+            },
+            {
+              "name": "X-Requested-With",
+              "value": "XMLHttpRequest"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 2000
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "3f1c1be2-efc3-41b3-b9c5-c043e6d52aee",
+      "name": "7. Get SVG URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        33456,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 從 ReportPartial 回應取出 svgurl，帶上 metadata（遍歷所有 items）\nconst items = $input.all();\nconst prevItems = $('6. Flatten Reports').all();\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const resp = items[i].json;\n  const prev = prevItems[i];\n  if (!prev || !prev.json) continue;\n  if (resp.status !== 'success' || !resp.svgurl) continue;\n  results.push({ json: {\n    svgurl: resp.svgurl,\n    sessionCookies: prev.json.sessionCookies,\n    Name: prev.json.Name,\n    MRNo: prev.json.MRNo,\n    CustomerName: prev.json.CustomerName,\n    DetectDate: prev.json.DetectDate,\n    院區病歷號: prev.json.院區病歷號\n  }});\n}\n\nreturn results;"
+      },
+      "id": "4b1c2c6a-4897-4dcc-b353-9cd5147d1d31",
+      "name": "7.5 Extract SVG URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        33664,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.svgurl }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 2000
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "c8d60ca0-2408-46bd-ab3e-781b40ddb2e9",
+      "name": "7.6 Fetch SVG",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        33888,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === 解析 SVG <text> 元素提取檢驗數據（遍歷所有 items）===\nconst items = $input.all();\nconst prevItems = $('7.5 Extract SVG URL').all();\n\nfunction strip(s) { return String(s || '').replace(/<[^>]*>/g, '').trim(); }\n\nconst allResults = [];\n\nfor (let idx = 0; idx < items.length; idx++) {\nconst svg = items[idx].json.data || '';\nconst prev = prevItems[idx];\n\nif (!svg.includes('<svg')) continue;\n\nconst results = {\n  姓名: prev.json.Name || '',\n  院區病歷號: prev.json.院區病歷號 || '',\n  診所: prev.json.CustomerName || '',\n  檢驗日期: prev.json.DetectDate || '',\n  HL病歷號: prev.json.MRNo || ''\n};\n\nconst labMap = {\n  'WBC Count': 'WBC', 'RBC Count': 'RBC',\n  'Hemoglobin': 'Hb', 'Hematocrit': 'Hct',\n  'MCV': 'MCV', 'MCH': 'MCH', 'MCHC': 'MCHC',\n  'Platelet': 'PLT',\n  'Neutrophil Segment': 'Neutrophil', 'Lymphocyte': 'Lymphocyte',\n  'Monocyte': 'Monocyte', 'Eosinophil': 'Eosinophil', 'Basophil': 'Basophil',\n  'Triglyceride': 'TG',\n  'Total Cholesterol': 'TC', 'T-Cholesterol': 'TC',\n  'HDL-C': 'HDL', 'LDL-C': 'LDL',\n  'BUN': 'BUN', 'Creatinine': 'Cr', 'Uric Acid': 'UA',\n  'eGFR': 'eGFR',\n  'Fasting Sugar': 'AC_Sugar', 'AC Sugar': 'AC_Sugar', 'Sugar AC': 'AC_Sugar', 'GLU AC': 'AC_Sugar',\n  'PC Sugar': 'PC_Sugar', 'Sugar PC': 'PC_Sugar', 'GLU PC': 'PC_Sugar',\n  'HBA1c': 'HbA1c', 'HbA1c': 'HbA1c', 'Glycated Hemoglobin': 'HbA1c',\n  'S-GOT': 'AST', 'GOT': 'AST', 'AST': 'AST',\n  'S-GPT': 'ALT', 'GPT': 'ALT', 'ALT': 'ALT',\n  'r-GTP': 'GGT', 'r-GT': 'GGT', 'GGT': 'GGT',\n  'Alkaline Phosphatase': 'ALP', 'Alk-P': 'ALP', 'ALP': 'ALP',\n  'Total Bilirubin': 'TBil', 'T-Bilirubin': 'TBil',\n  'Direct Bilirubin': 'DBil', 'D-Bilirubin': 'DBil',\n  'Total Protein': 'TP', 'Albumin': 'Alb', 'Globulin': 'Glob',\n  'Sodium': 'Na', 'Potassium': 'K',\n  'Amylase': 'Amylase', 'TSH': 'TSH', 'Free T4': 'FT4',\n  'Calcium': 'Ca', 'Phosphorus': 'P',\n  'Iron': 'Fe', 'TIBC': 'TIBC', 'Ferritin': 'Ferritin',\n  'CRP': 'CRP', 'ESR': 'ESR',\n  'T3': 'T3', 'T4': 'T4',\n  'AFP': 'AFP', 'CEA': 'CEA', 'CA-199': 'CA199', 'PSA': 'PSA',\n  'Insulin': 'Insulin', 'C-Peptide': 'CPeptide',\n  'Vitamin D': 'VitD', '25-OH Vitamin D': 'VitD',\n  'Homocysteine': 'Hcy', 'hs-CRP': 'hsCRP'\n};\n\nconst textRegex = /<text[^>]*?x=\"([\\d.]+)\"[^>]*?y=\"([\\d.]+)\"[^>]*?>([\\s\\S]*?)<\\/text>/gi;\nconst rows = {};\nlet m;\nwhile ((m = textRegex.exec(svg)) !== null) {\n  const x = parseFloat(m[1]);\n  const y = Math.round(parseFloat(m[2]));\n  const text = strip(m[3]);\n  if (!text) continue;\n  if (!rows[y]) rows[y] = [];\n  rows[y].push({ x, text });\n}\n\nfor (const y in rows) {\n  const cells = rows[y].sort((a, b) => a.x - b.x);\n  if (cells.length < 2) continue;\n\n  let itemName = '';\n  let value = '';\n  let flag = '';\n\n  for (const cell of cells) {\n    if (cell.x < 400) itemName = cell.text;\n    if (cell.x >= 900 && cell.x <= 1200 && /^[\\d.]+$/.test(cell.text)) value = cell.text;\n    if (cell.x >= 1250 && cell.x <= 1380 && (cell.text === 'H' || cell.text === 'L')) flag = cell.text;\n  }\n\n  if (!itemName || !value) continue;\n\n  const cleanName = itemName.replace(/\\s*\\(.*?\\)\\s*$/, '').replace(/\\s+/g, ' ').trim();\n\n  let col = null;\n  for (const [key, c] of Object.entries(labMap)) {\n    if (itemName === key || itemName.startsWith(key)) { col = c; break; }\n  }\n  if (!col) {\n    for (const [key, c] of Object.entries(labMap)) {\n      if (cleanName === key || cleanName.startsWith(key)) { col = c; break; }\n    }\n  }\n\n  if (col) {\n    results[col] = flag ? value + ' ' + flag : value;\n  }\n}\n\nallResults.push({ json: results });\n} // end for idx\n\nreturn allResults;\n"
+      },
+      "id": "3a8e2984-7314-4b3f-9302-d44200008a28",
+      "name": "8. Parse Lab Results (SVG)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        34112,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1M2SzVfAM8I9RnuTj6_nE9Iawn9obJexo2xHl_Lyf1eQ",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "抽血報告",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "413f175c-0900-44b8-8c1e-29fefdbaf340",
+      "name": "8.5 Read Existing Reports",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        34336,
+        6736
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "H03DTZFclAXelmuf",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 去重：比對 Node 8 解析結果與已存在的抽血報告\nconst newItems = $('8. Parse Lab Results (SVG)').all();\nconst existingItems = $input.all();\n\nconst existingKeys = new Set();\nfor (const item of existingItems) {\n  const name = String(item.json['姓名'] || '').trim();\n  const date = String(item.json['檢驗日期'] || '').trim();\n  if (name && date) existingKeys.add(name + '|' + date);\n}\n\nconst results = [];\nfor (const item of newItems) {\n  const name = String(item.json['姓名'] || '').trim();\n  const date = String(item.json['檢驗日期'] || '').trim();\n  const key = name + '|' + date;\n  if (!existingKeys.has(key)) {\n    results.push(item);\n  }\n}\n\nreturn results;"
+      },
+      "id": "d501e9f1-7693-4dd4-aa05-24febc1a4d91",
+      "name": "8.6 Dedup Filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        34544,
+        6736
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1M2SzVfAM8I9RnuTj6_nE9Iawn9obJexo2xHl_Lyf1eQ",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "抽血報告",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "姓名",
+              "displayName": "姓名",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "院區病歷號",
+              "displayName": "院區病歷號",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "診所",
+              "displayName": "診所",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "檢驗日期",
+              "displayName": "檢驗日期",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "HL病歷號",
+              "displayName": "HL病歷號",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "WBC",
+              "displayName": "WBC",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Neutrophil",
+              "displayName": "Neutrophil",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lymphocyte",
+              "displayName": "Lymphocyte",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Monocyte",
+              "displayName": "Monocyte",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Eosinophil",
+              "displayName": "Eosinophil",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Basophil",
+              "displayName": "Basophil",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "RBC",
+              "displayName": "RBC",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Hb",
+              "displayName": "Hb",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Hct",
+              "displayName": "Hct",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "MCV",
+              "displayName": "MCV",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "MCH",
+              "displayName": "MCH",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "MCHC",
+              "displayName": "MCHC",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "PLT",
+              "displayName": "PLT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TG",
+              "displayName": "TG",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TC",
+              "displayName": "TC",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "HDL",
+              "displayName": "HDL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "LDL",
+              "displayName": "LDL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "BUN",
+              "displayName": "BUN",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Cr",
+              "displayName": "Cr",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "UA",
+              "displayName": "UA",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "eGFR",
+              "displayName": "eGFR",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "AC_Sugar",
+              "displayName": "AC_Sugar",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "PC_Sugar",
+              "displayName": "PC_Sugar",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "HbA1c",
+              "displayName": "HbA1c",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Amylase",
+              "displayName": "Amylase",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TBil",
+              "displayName": "TBil",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "DBil",
+              "displayName": "DBil",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "AST",
+              "displayName": "AST",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ALT",
+              "displayName": "ALT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "GGT",
+              "displayName": "GGT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ALP",
+              "displayName": "ALP",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TP",
+              "displayName": "TP",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Alb",
+              "displayName": "Alb",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Glob",
+              "displayName": "Glob",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Na",
+              "displayName": "Na",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "K",
+              "displayName": "K",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "fc890e27-2370-42b5-beed-4b562c10cd15",
+      "name": "9. Write to Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        34768,
+        6736
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "H03DTZFclAXelmuf",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "手動觸發": {
+      "main": [
+        [
+          {
+            "node": "0. Read Client List",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "1. GET Login Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. GET Login Page": {
+      "main": [
+        [
+          {
+            "node": "2. Extract CSRF Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Extract CSRF Token": {
+      "main": [
+        [
+          {
+            "node": "3. POST Login",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. POST Login": {
+      "main": [
+        [
+          {
+            "node": "4. Extract Session Cookie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Extract Session Cookie": {
+      "main": [
+        [
+          {
+            "node": "4.5 Split Client Names",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4.5 Split Client Names": {
+      "main": [
+        [
+          {
+            "node": "5. GET Report List (per patient)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. GET Report List (per patient)": {
+      "main": [
+        [
+          {
+            "node": "6. Flatten Reports",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Flatten Reports": {
+      "main": [
+        [
+          {
+            "node": "7. Get SVG URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Get SVG URL": {
+      "main": [
+        [
+          {
+            "node": "7.5 Extract SVG URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7.5 Extract SVG URL": {
+      "main": [
+        [
+          {
+            "node": "7.6 Fetch SVG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7.6 Fetch SVG": {
+      "main": [
+        [
+          {
+            "node": "8. Parse Lab Results (SVG)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Parse Lab Results (SVG)": {
+      "main": [
+        [
+          {
+            "node": "8.5 Read Existing Reports",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8.5 Read Existing Reports": {
+      "main": [
+        [
+          {
+            "node": "8.6 Dedup Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8.6 Dedup Filter": {
+      "main": [
+        [
+          {
+            "node": "9. Write to Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "29f1e01a-99ee-48aa-b2f4-84b70f70e5a7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7d2c6c7550d1169f20c21525ca8cbeabb64edec360336f05bc04017a8256fb89"
+  },
+  "id": "Di2vYiRzoxJidXrI",
+  "tags": []
+}

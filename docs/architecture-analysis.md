@@ -229,10 +229,10 @@ sequenceDiagram
 
 | Policy | 綁定角色 | 允許 actions | resource 範圍 |
 |---|---|---|---|
-| `patient-self-access` | patient | `food_log:*` / `inbody:read` / `visit:read` / `notification:*` / `upload:write` | `tenant/{T}/user/{U}/*`(**只能存取自己**) |
-| `staff-clinic-ops` | staff | `inbody:*` / `food_log:read` / `visit:*` / `patient:read` / `upload:write` | `tenant/{T}/*` |
-| `nutritionist-ops` | nutritionist | `push:send` / `food_log:read` / `inbody:*` / `notification:write` / `patient:read` | `tenant/{T}/*` |
-| `clinic-admin` | admin | `patient:*` / `inbody:*` / `food_log:*` / `visit:*` / `notification:*` / `push:*` / `upload:write` | `tenant/{T}/*` |
+| `patient-self-access` | patient | `food_log:*` / `inbody:read` / `visit:read` / `notification:*` / `upload:write` / `blood_test_report:read` | `tenant/{T}/user/{U}/*`(**只能存取自己**) |
+| `staff-clinic-ops` | staff | `inbody:*` / `food_log:read` / `visit:*` / `patient:read` / `upload:write` / `blood_test_report:*` | `tenant/{T}/*` |
+| `nutritionist-ops` | nutritionist | `push:send` / `food_log:read` / `inbody:*` / `notification:write` / `patient:read` / `blood_test_report:*` | `tenant/{T}/*` |
+| `clinic-admin` | admin | `patient:*` / `inbody:*` / `food_log:*` / `visit:*` / `notification:*` / `push:*` / `upload:write` / `blood_test_report:*` | `tenant/{T}/*` |
 | `super-admin-all` | super_admin | `*` | `*` |
 
 **這套設計的精華**:role policy 把 `${auth:tenant_id}` 寫進 resource pattern → tenant 隔離由 IAM 引擎自動做掉,業務層只是 defense-in-depth。新增服務 = 在 `services` + `action_mappings` 加 row,policy 不用改。
@@ -260,8 +260,8 @@ sequenceDiagram
 ### 3.1 結構(`main.py`)
 
 ```
-9 routers: health / patients / inbody / food_logs / visits / notifications
-         / line_webhook / upload / patient_goals
+10 routers: health / patients / inbody / food_logs / visits / notifications
+          / line_webhook / upload / patient_goals / blood_test
 ```
 
 ### 3.2 解耦設計(`deps.py`)
@@ -313,19 +313,58 @@ flowchart TB
 - `GET /inbody/records` / `GET /inbody/pending/*` → admin / nutritionist(resource = `tenant/{T}/*`)
 - `super_admin` 可傳 `all_tenants=true` → 進 `rls_bypass()` 跨租戶讀
 
-### 3.4 資料 schema(`app_db`,10 張)
+### 3.4 資料 schema(`app_db`,11 張)
 
 ```
 patients(auth_user_id UNIQUE, tenant_id) ─┬─ line_bindings
                                           ├─ visits ── medications
                                           ├─ inbody_records / inbody_pending
-                                          ├─ food_logs (JSONB food_items)
+                                          ├─ food_logs (JSONB food_items) ── food_log_images
                                           ├─ notification_rules / notification_logs
-                                          └─ patient_goals (migration 0005~0010 補的)
+                                          ├─ patient_goals (migration 0005~0010 補的)
+                                          └─ blood_test_reports (migration 0011；HL 同步,JSONB lab_values)
 employees(line_uuid, clinic_id, role)
 ```
 
 所有業務表都帶 `tenant_id NOT NULL DEFAULT 0`,加上 4+2 套稽核欄位(`created/updated/deleted_*`),由 `audit_autofill()` trigger 從 `app.current_user` session var 自動填。
+
+### 3.5 外部整合:Healthleader 抽血報告同步(後台手動觸發)
+
+把原本的 n8n flow(`docs/Healthleader 抽血報告同步到 Google Sheet v10.json`)搬進 main_service:source 改用自家 `patients.chart_no`(院區病歷號),sink 改成 `app_db.blood_test_reports`,**完全不再寫 Google Sheet**。admin 按一下後台按鈕 → `POST /blood-test-reports/sync` → `BackgroundTasks` 背景跑(同步動輒數十秒)。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Admin as Admin (後台)
+    participant M as main_service<br/>blood_test_sync
+    participant HL as Healthleader<br/>manage.healthleader.com.tw
+    participant DB as app_db<br/>blood_test_reports
+
+    Admin->>M: POST /blood-test-reports/sync<br/>(staff/nutritionist/admin)
+    M-->>Admin: 202 accepted（背景跑）
+
+    Note over M: 撈同 tenant patients<br/>chart_no 符「字母+數字」格式
+    M->>HL: GET /Account/Login → 抓 CSRF token
+    M->>HL: POST /Account/Login（form, 不跟隨 redirect）
+    HL-->>M: session cookie（jar 自動帶）
+
+    loop 每位 patient（chart_no 數字段 = MRNo）
+        M->>HL: POST GetDataV3（MRNo）
+        HL-->>M: 報告清單 [{ID, DetectDate, MRNo, ...}]（欄位含 HTML，需 strip）
+        loop 每筆新報告（去重 by hl_report_id）
+            M->>HL: POST ReportPartial/TY/{ID} → svgurl
+            M->>HL: POST {svgurl} → SVG
+            M->>M: parse_lab_svg：SVG text 座標 → 37 項 lab_values
+            M->>DB: INSERT blood_test_report<br/>(patient_id, test_date, lab_values JSONB)
+        end
+    end
+```
+
+要點:
+- **病患歸屬是確定性的** —— 用哪位 patient 的 chart_no 去查,報告就綁到那位 patient_id,不靠回傳姓名比對。
+- **去重** key = `(tenant_id, hl_report_id)`(`report.ID`),DB partial unique index 兜底;重跑只會補新報告。
+- **HTML 清洗**:HL 的 `GetDataV3` 欄位包 `<div>/<span>`,`_clean()` 去標籤後才用(對齊 n8n node 6 的 `strip()`)。
+- 單一共用 HL 帳號走 env(`HL_ACCOUNT` / `HL_PASSWORD`;`HL_HOSPITAL_NO` 可空)。授權:`main:blood_test_report:read|write`,patient 只能 `GET /blood-test-reports` 讀自己。
 
 ---
 
@@ -375,4 +414,4 @@ Nginx 對前端頁面有兩種把關:
 
 ## 結論
 
-整體看,這套架構在 MVP 階段做得相當完整:**authz 集中、業務乾淨、多租戶有三層防線、JWT 不綁 schema**。25 份 auth migration + 10 份 main migration 顯示授權模型其實是穩定的,大部分 migration 是新 endpoint 的 action_mapping seed —— 證明這個 IAM model 真的 scalable。
+整體看,這套架構在 MVP 階段做得相當完整:**authz 集中、業務乾淨、多租戶有三層防線、JWT 不綁 schema**。26 份 auth migration + 11 份 main migration 顯示授權模型其實是穩定的,大部分 migration 是新 endpoint 的 action_mapping seed(最新 `000026` 是抽血報告 endpoint 的 mapping + policy 擴充) —— 證明這個 IAM model 真的 scalable。
