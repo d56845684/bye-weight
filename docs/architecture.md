@@ -46,7 +46,7 @@ Compute Engine VM  e2-standard-2  ubuntu-22.04  asia-east1
     ↓ 內網
 Cloud SQL PostgreSQL 15  asia-east1（同一實例，兩個 Database）
   ├── auth_db  users / roles / permissions / role_permissions / policies / policy_conditions
-  └── app_db   patients / visits / inbody / food_logs / ...
+  └── app_db   patients / visits / inbody / food_logs / blood_test_reports / ...
 Cloud Storage Standard   asia-east1
 
 外部 API
@@ -301,13 +301,16 @@ WantedBy=multi-user.target
 /notification-rules/{id}     DELETE 停用通知規則
 /notify/manual               POST  手動推播（營養師用）
 /internal/notify/run         POST  排程觸發入口（Cloud Scheduler 呼叫）
+/blood-test-reports/sync     POST  觸發 Healthleader 抽血報告同步（後台手動）
+/blood-test-reports/records  GET   抽血報告列表（admin tenant-wide）
+/blood-test-reports          GET   病患讀自己的抽血報告
 ```
 
 ---
 
 ## 4. 資料層
 
-### 4.1 資料庫 Schema（10 張表）
+### 4.1 資料庫 Schema（11 張表）
 
 ```sql
 -- 員工白名單（與病患完全獨立）
@@ -433,6 +436,21 @@ CREATE TABLE notification_logs (
     sent_at         TIMESTAMP,
     line_uuid       VARCHAR(64)
 );
+
+-- 抽血報告（從 Healthleader 後台同步；migration 0011）
+-- 一筆 = HL 一份報告；37 項檢驗值整包存 JSONB，避免每加一項就 ALTER
+CREATE TABLE blood_test_reports (
+    id            SERIAL PRIMARY KEY,
+    patient_id    INT REFERENCES patients(id),
+    hl_report_id  VARCHAR(64) NOT NULL,      -- report.ID（去重 key）
+    hl_mrno       VARCHAR(32),               -- HL病歷號（report.MRNo）
+    detect_no     VARCHAR(64),
+    clinic_name   VARCHAR(100),              -- 診所（report.CustomerName）
+    test_date     TIMESTAMP NOT NULL,        -- 檢驗日期（report.DetectDate）
+    lab_values    JSONB,                     -- {"WBC": {"value": 5.2, "flag": "H"}, ...}
+    svg_url       TEXT
+    -- + tenant_id / 4+2 稽核欄 / partial unique (tenant_id, hl_report_id)
+);
 ```
 
 ### 4.2 重要 Index
@@ -447,6 +465,12 @@ CREATE INDEX idx_inbody_patient_time  ON inbody_records(patient_id, measured_at 
 
 -- 飲食記錄查詢
 CREATE INDEX idx_food_patient_date    ON food_logs(patient_id, logged_at DESC);
+
+-- 抽血報告查詢 + 去重
+CREATE INDEX idx_blood_test_patient   ON blood_test_reports(patient_id, test_date)
+    WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX uq_blood_test_hl_report
+    ON blood_test_reports(tenant_id, hl_report_id) WHERE deleted_at IS NULL;
 
 -- 通知排程查詢
 CREATE INDEX idx_visits_next_visit    ON visits(next_visit_date)
@@ -916,9 +940,9 @@ CREATE TABLE login_logs (
 
 | Policy | 綁定角色 | 概述 |
 |---|---|---|
-| `patient-self-access` | patient | 僅可存取自己的 food_log / inbody / visit / notification（`main:tenant/${auth:tenant_id}/user/${auth:user_id}/*`） |
-| `staff-clinic-ops` | staff | 同 tenant 內 inbody:*、food_log:read、visit:*、patient:read、upload:write |
-| `nutritionist-ops` | nutritionist | 同 tenant 內 push:send、food_log:read、inbody:*、notification:write、patient:read |
+| `patient-self-access` | patient | 僅可存取自己的 food_log / inbody / visit / notification / blood_test_report:read（`main:tenant/${auth:tenant_id}/user/${auth:user_id}/*`） |
+| `staff-clinic-ops` | staff | 同 tenant 內 inbody:*、food_log:read、visit:*、patient:read、upload:write、blood_test_report:* |
+| `nutritionist-ops` | nutritionist | 同 tenant 內 push:send、food_log:read、inbody:*、notification:write、patient:read、blood_test_report:* |
 | `clinic-admin` | admin | 同 tenant 內全部資源（`main:tenant/${auth:tenant_id}/*`）|
 | `super-admin-all` | super_admin | 跨 tenant `*:*`（用 wildcard） |
 

@@ -42,10 +42,10 @@ graph TB
 
     subgraph Policies["Policy Documents (JSONB, role_policies N:M)"]
         P_SA["super-admin-all<br/>actions: *<br/>resources: *"]
-        P_AD["clinic-admin<br/>main:*:* + admin:user:*<br/>admin:role:read, tenant:read<br/>scope: tenant/${auth:tenant_id}/*"]
-        P_ST["staff-clinic-ops<br/>main:inbody/visit:*<br/>patient:write, goal:read<br/>admin:view<br/>scope: tenant/${auth:tenant_id}/*"]
-        P_NU["nutritionist-ops<br/>main:push:send, goal:*<br/>inbody:*, notification:write<br/>admin:view<br/>scope: tenant/${auth:tenant_id}/*"]
-        P_PA["patient-self-access<br/>main:food_log/inbody/visit/<br/>notification/patient:read+register<br/>scope: tenant/{tid}/user/{自己 uid}/*"]
+        P_AD["clinic-admin<br/>main:*:* + admin:user:*<br/>admin:role:read, tenant:read<br/>blood_test_report:*<br/>scope: tenant/${auth:tenant_id}/*"]
+        P_ST["staff-clinic-ops<br/>main:inbody/visit:*<br/>patient:write, goal:read<br/>blood_test_report:*, admin:view<br/>scope: tenant/${auth:tenant_id}/*"]
+        P_NU["nutritionist-ops<br/>main:push:send, goal:*<br/>inbody:*, notification:write<br/>blood_test_report:*, admin:view<br/>scope: tenant/${auth:tenant_id}/*"]
+        P_PA["patient-self-access<br/>main:food_log/inbody/visit/<br/>notification/patient:read+register<br/>blood_test_report:read<br/>scope: tenant/{tid}/user/{自己 uid}/*"]
         P_INV["patient-inviter<br/>admin:user:invite only<br/>(手動指派, 不綁 role)"]
     end
 
@@ -105,10 +105,10 @@ super_admin (全宇宙, *:*)
 
 | Role | Policy | Source migration |
 |---|---|---|
-| `patient` | `patient-self-access` | `000002_iam` → 後續 `000009`、`000011` 擴 actions |
-| `staff` | `staff-clinic-ops` | `000002_iam` → `000011`/`000012`/`000025` 擴 actions |
-| `nutritionist` | `nutritionist-ops` | `000002_iam` → `000012`/`000025` 擴 actions |
-| `admin` | `clinic-admin` | `000002_iam` → `000012`/`000014`/`000016`/`000025` 數次重寫 |
+| `patient` | `patient-self-access` | `000002_iam` → 後續 `000009`、`000011`、`000026` 擴 actions |
+| `staff` | `staff-clinic-ops` | `000002_iam` → `000011`/`000012`/`000025`/`000026` 擴 actions |
+| `nutritionist` | `nutritionist-ops` | `000002_iam` → `000012`/`000025`/`000026` 擴 actions |
+| `admin` | `clinic-admin` | `000002_iam` → `000012`/`000014`/`000016`/`000025`/`000026` 數次重寫 |
 | `super_admin` | `super-admin-all` | `000002_iam`（永遠是 `*:*`） |
 | _（手動指派）_ | `patient-inviter` | `000015_patient_invite`（只給 `admin:user:invite`） |
 

@@ -95,6 +95,9 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
             <Can action="main:visit:read">
               <Link href="/admin/visits" className="hover:underline">看診紀錄</Link>
             </Can>
+            <Can action="main:blood_test_report:read">
+              <Link href="/admin/blood-test-reports" className="hover:underline">抽血報告</Link>
+            </Can>
             <Can action="main:goal:read">
               <Link href="/admin/patient-goals" className="hover:underline">目標歷史</Link>
             </Can>
